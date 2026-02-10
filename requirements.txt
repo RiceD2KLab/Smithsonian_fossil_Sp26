@@ -1,0 +1,8 @@
+openslide-python
+openslide-bin
+tifffile
+imagecodecs
+opencv-python-headless
+numpy
+h5py
+zarr
