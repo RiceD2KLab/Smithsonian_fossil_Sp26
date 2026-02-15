@@ -64,73 +64,71 @@ class NDPAData:
     """
     rois: List[RegionOfInterest]
     palynomorphs: List[PalynomorphAnnotation]
-
-
-"""
-NOTE: My current assumption is that rectangles are used to denote ROIs
-and circles are used to denote individual palynomorphs.  This is based on
-typical usage of NDP.view, but may not be universally true.  If we encounter
-cases where this assumption breaks down, we may need to add additional logic
-to distinguish between ROI and palynomorph annotations, such as by checking the
-size of the bounding box or by looking for specific label patterns.
-"""
-def parse_ndpa(ndpa_path: str) -> NDPAData:
-    """
-    Parse an NDPA XML file and return an NDPAData object.
-
-    The NDPA file is a companion to the NDPI slide, containing user-drawn
-    annotations (circles around palynomorphs, rectangles around regions of
-    interest).  Each <ndpviewstate> element describes one annotation with
-    its type, position, and label.
-    """
-    tree = ET.parse(ndpa_path)
-    root = tree.getroot()
     
-    rois = []
-    palynomorphs = []
+    """
+    NOTE: My current assumption is that rectangles are used to denote ROIs
+    and circles are used to denote individual palynomorphs.  This is based on
+    typical usage of NDP.view, but may not be universally true.  If we encounter
+    cases where this assumption breaks down, we may need to add additional logic
+    to distinguish between ROI and palynomorph annotations, such as by checking the
+    size of the bounding box or by looking for specific label patterns.
+    """
 
-    for vs in root.findall("ndpviewstate"):
+    def __init__ (self, ndpa_path: str):
+        """
+        Parse an NDPA XML file and return an NDPAData object.
 
-        ann_id = int(vs.get("id", 0))
-        ann_elem = vs.find("annotation")
-        if ann_elem is None:
-            continue
-        ann_type = ann_elem.get("type", "")
+        The NDPA file is a companion to the NDPI slide, containing user-drawn
+        annotations (circles around palynomorphs, rectangles around regions of
+        interest).  Each <ndpviewstate> element describes one annotation with
+        its type, position, and label.
+        """
+        tree = ET.parse(ndpa_path)
+        root = tree.getroot()
+        
+        self.rois = []
+        self.palynomorphs = []
 
-        if ann_type == "circle":
-            
-            label = vs.findtext("title", "").strip()
-            cx = int(ann_elem.findtext("x", "0"))
-            cy = int(ann_elem.findtext("y", "0"))
-            radius = int(ann_elem.findtext("radius", "0"))
-            circle = Circle(cx=cx, cy=cy, radius=radius)
-            palynomorphs.append(PalynomorphAnnotation(
-                id=ann_id, label=label, bounds=circle
-            ))
-            
-        elif ann_type == "freehand":
-            
-            # NDP.view stores rectangles as "freehand" with 4 corner points
-            points = []
-            for pt in ann_elem.findall(".//point"):
-                px = int(pt.findtext("x", "0"))
-                py = int(pt.findtext("y", "0"))
-                points.append((px, py))
+        for vs in root.findall("ndpviewstate"):
+
+            ann_id = int(vs.get("id", 0))
+            ann_elem = vs.find("annotation")
+            if ann_elem is None:
+                continue
+            ann_type = ann_elem.get("type", "")
+
+            if ann_type == "circle":
                 
-            if points:
-                xs = [p[0] for p in points]
-                ys = [p[1] for p in points]
-                rectangle = Rectangle(x=min(xs), y=min(ys), width=max(xs)-min(xs), height=max(ys)-min(ys))
-                rois.append(RegionOfInterest(
-                    id=ann_id, bounds=rectangle
+                label = vs.findtext("title", "").strip()
+                cx = int(ann_elem.findtext("x", "0"))
+                cy = int(ann_elem.findtext("y", "0"))
+                radius = int(ann_elem.findtext("radius", "0"))
+                circle = Circle(cx=cx, cy=cy, radius=radius)
+                self.palynomorphs.append(PalynomorphAnnotation(
+                    id=ann_id, label=label, bounds=circle
                 ))
-
-    return NDPAData(rois=rois, palynomorphs=palynomorphs)
+                
+            elif ann_type == "freehand":
+                
+                # NDP.view stores rectangles as "freehand" with 4 corner points
+                points = []
+                for pt in ann_elem.findall(".//point"):
+                    px = int(pt.findtext("x", "0"))
+                    py = int(pt.findtext("y", "0"))
+                    points.append((px, py))
+                    
+                if points:
+                    xs = [p[0] for p in points]
+                    ys = [p[1] for p in points]
+                    rectangle = Rectangle(x=min(xs), y=min(ys), width=max(xs)-min(xs), height=max(ys)-min(ys))
+                    self.rois.append(RegionOfInterest(
+                        id=ann_id, bounds=rectangle
+                    ))
 
 if __name__ == "__main__":
     # Example usage: parse an NDPA file and print the annotations
-    ndpa_file = "<file path>"
-    anns = parse_ndpa(ndpa_file)
+    ndpa_file = "< file path >"
+    anns = NDPAData(ndpa_file)
     for ann in anns.rois:
         print(f"Annotation {ann.id} (ROI): bbox={ann.bounds.get_bounding_box()}")
     for ann in anns.palynomorphs:

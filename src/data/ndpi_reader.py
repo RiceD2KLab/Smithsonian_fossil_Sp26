@@ -25,6 +25,19 @@ class FocalPlaneInfo:
     shape: tuple          # (height, width, channels) of this page
 
 @dataclass
+class NDPIMetadata:
+    """
+    NDPI file metadata, particularly physical-to-pixel conversion constants.
+    """
+    mpp_x: float              # microns per pixel at max (40x) magnification
+    mpp_y: float
+    objective_power: float    # highest native magnification (typically 40)
+    x_offset_nm: int          # slide-centre offset (Hamamatsu metadata)
+    y_offset_nm: int
+    full_width: int           # image width in pixels at 40x
+    full_height: int          # image height in pixels at 40x
+
+@dataclass
 class NDPIData:
     """
     Top-level container for all NDPI data.
@@ -34,14 +47,51 @@ class NDPIData:
     NDPI file path.
     """
     ndpi_path: str
-    mpp_x: float              # microns per pixel at max (40x) magnification
-    mpp_y: float
-    objective_power: float    # highest native magnification (typically 40)
-    x_offset_nm: int          # slide-centre offset (Hamamatsu metadata)
-    y_offset_nm: int
-    full_width: int           # image width in pixels at 40x
-    full_height: int          # image height in pixels at 40x
-    focal_planes: list[FocalPlaneInfo] = field(default_factory=list)   # list[FocalPlaneInfo]
+    metadata: NDPIMetadata
+    focal_planes: list[FocalPlaneInfo] = field(default_factory=list)
+    
+    def __init__(self, ndpi_path: str):
+        """
+        Open an NDPI file, extract metadata, and build the focal-plane map.
+
+        Uses OpenSlide for high-level properties (MPP, dimensions, offsets) and
+        tifffile to iterate through raw TIFF pages and read Hamamatsu-specific tags:
+        - Tag 65421 = magnification of this page
+        - Tag 65424 = z-offset (focal depth) of this page
+        """
+        self.ndpi_path = ndpi_path
+
+        slide = openslide.OpenSlide(ndpi_path)
+        props = slide.properties
+        self.metadata=NDPIMetadata(
+            mpp_x=float(props.get("openslide.mpp-x", 0)),
+            mpp_y=float(props.get("openslide.mpp-y", 0)),
+            objective_power=float(props.get("openslide.objective-power", 40)),
+            x_offset_nm=int(props.get("hamamatsu.XOffsetFromSlideCentre", 0)),
+            y_offset_nm=int(props.get("hamamatsu.YOffsetFromSlideCentre", 0)),
+            full_width=slide.dimensions[0],
+            full_height=slide.dimensions[1],
+        )
+        slide.close()
+
+        # Walk through every TIFF page and record the (magnification, z-offset) → page_index mapping
+        self.focal_planes = []
+        with tifffile.TiffFile(ndpi_path) as tif:
+            for i, page in enumerate(tif.pages):
+                mag_tag = None
+                z_tag = None
+                for tag in page.tags.values():
+                    if tag.code == 65421:
+                        mag_tag = tag.value
+                    if tag.code == 65424:
+                        z_tag = tag.value
+                if mag_tag is not None and z_tag is not None and mag_tag > 0:
+                    self.focal_planes.append(FocalPlaneInfo(
+                        z_offset_nm=int(z_tag),
+                        magnification=float(mag_tag),
+                        page_index=i,
+                        shape=page.shape,
+                    ))
 
     def get_page_index(self, magnification: float, z_offset: int) -> int:
         """Given a magnification and z-offset, return the corresponding TIFF page index."""
@@ -115,55 +165,10 @@ class NDPIData:
 
         return tile
     
-def load_ndpi(ndpi_path: str) -> NDPIData:
-    """
-    Open an NDPI file, extract metadata, and build the focal-plane map.
-
-    Uses OpenSlide for high-level properties (MPP, dimensions, offsets) and
-    tifffile to iterate through raw TIFF pages and read Hamamatsu-specific tags:
-      - Tag 65421 = magnification of this page
-      - Tag 65424 = z-offset (focal depth) of this page
-    """
-    slide = openslide.OpenSlide(ndpi_path)
-    props = slide.properties
-
-    data = NDPIData(
-        ndpi_path=ndpi_path,
-        mpp_x=float(props.get("openslide.mpp-x", 0)),
-        mpp_y=float(props.get("openslide.mpp-y", 0)),
-        objective_power=float(props.get("openslide.objective-power", 40)),
-        x_offset_nm=int(props.get("hamamatsu.XOffsetFromSlideCentre", 0)),
-        y_offset_nm=int(props.get("hamamatsu.YOffsetFromSlideCentre", 0)),
-        full_width=slide.dimensions[0],
-        full_height=slide.dimensions[1],
-    )
-    slide.close()
-
-    # Walk through every TIFF page and record the (magnification, z-offset) → page_index mapping
-    with tifffile.TiffFile(ndpi_path) as tif:
-        for i, page in enumerate(tif.pages):
-            mag_tag = None
-            z_tag = None
-            for tag in page.tags.values():
-                if tag.code == 65421:
-                    mag_tag = tag.value
-                if tag.code == 65424:
-                    z_tag = tag.value
-            if mag_tag is not None and z_tag is not None and mag_tag > 0:
-                data.focal_planes.append(FocalPlaneInfo(
-                    z_offset_nm=int(z_tag),
-                    magnification=float(mag_tag),
-                    page_index=i,
-                    shape=page.shape,
-                ))
-
-    return data
-
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-
-    # Example usage: parse an NDPA file and print the annotations
-    ndpi_path = "<file path>"
-    ndpi = load_ndpi(ndpi_path)
-    tile = ndpi.get_tile(x=0, y=0, w=1024, h=1024, magnification=1.25)
+    
+    # Example usage: parse an NDPI file and print one tile at max magnification
+    ndpi_file = NDPIData("< file path >")
+    tile = ndpi_file.get_tile(x=0, y=0, w=1024, h=1024, magnification=1.25)
     plt.imsave('output.png', tile[:, :, :, 0])
