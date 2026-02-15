@@ -54,6 +54,7 @@ def generate_tiles(
         ndpi_data: NDPIData, 
         ndpa_data: NDPAData, 
         magnification: float,
+        tile_size: int,
         output_dir: str
         ):
     """
@@ -65,7 +66,9 @@ def generate_tiles(
     tiles = []
     for region in ndpa_data.rois:
         bounds = bounds_to_pixels(region.bounds, magnification, ndpi_data.metadata)
-        tiles.extend(compute_tile_grid(*bounds, tile_size=1024, overlap=0.0))
+        tiles.extend(compute_tile_grid(*bounds, tile_size=tile_size, overlap=0.0))
+
+    print(f"Generated {len(tiles)} tiles.")
 
     # Convert annotations to pixels
     annotations = []
@@ -121,48 +124,25 @@ def generate_tiles(
     with open(os.path.join(output_dir, "annotations.json"), "w") as f:
         json.dump(tile_to_annotations, f)
 
+def main():
+
+    INPUT_DIR = "<path_to_ndpi_files>"
+    OUTPUT_DIR = "<path_to_output_directory>"
+    MAGNIFICATION = 40
+    TILE_SIZE = 1024
+
+    for file in os.listdir(INPUT_DIR):
+        if file.endswith(".ndpi"):
+            ndpi_path = os.path.join(INPUT_DIR, file)
+            ndpa_path = ndpi_path + ".ndpa"
+            if os.path.exists(ndpa_path):
+                print(f"Processing {ndpi_path} with annotations from {ndpa_path}")
+                ndpi_data = NDPIData(ndpi_path)
+                ndpa_data = NDPAData(ndpa_path)
+                output_dir = os.path.join(OUTPUT_DIR, os.path.splitext(file)[0])
+                generate_tiles(ndpi_data, ndpa_data, magnification=MAGNIFICATION, tile_size=TILE_SIZE, output_dir=output_dir)
+            else:
+                print(f"Warning: No corresponding .ndpa file found for {ndpi_path}, skipping.")
+
 if __name__ == "__main__":
-
-    NDPI_PATH = "<path_to_ndpi_file>"
-    NDPA_PATH = "<path_to_ndpa_file>"
-    OUTPUT_PATH = "<path_to_output_directory>"
-
-    ndpi_data = NDPIData(NDPI_PATH)
-    ndpa_data = NDPAData(NDPA_PATH)
-    generate_tiles(ndpi_data, ndpa_data, magnification=20, output_dir=OUTPUT_PATH)
-
-    # --- Load a random tile with annotations and display it with bounding boxes ---
-    import random
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as patches
-
-    output_dir = OUTPUT_PATH
-    tiles_dir = os.path.join(output_dir, "tiles")
-    ann_path = os.path.join(output_dir, "annotations.json")
-    with open(ann_path, "r") as f:
-        tile_to_annotations = json.load(f)
-
-    # Filter to only tiles with at least one annotation
-    annotated_tiles = [k for k, v in tile_to_annotations.items() if len(v) > 0]
-    if not annotated_tiles:
-        print("No annotated tiles found.")
-    else:
-        tile_file = random.choice(annotated_tiles)
-        tile_path = os.path.join(output_dir, tile_file) if not os.path.exists(os.path.join(tiles_dir, os.path.basename(tile_file))) else os.path.join(tiles_dir, os.path.basename(tile_file))
-        arr = np.load(tile_path)
-        anns = tile_to_annotations[tile_file]
-
-        # Use the 13th z-slice
-        z_idx = 12
-        if arr.shape[-1] <= z_idx:
-            print(f"Tile does not have 15 z-slices, shape: {arr.shape}")
-        else:
-            img = arr[:, :, :, z_idx]
-            fig, ax = plt.subplots(1)
-            ax.imshow(img)
-            for box in anns:
-                x, y, w, h = box
-                rect = patches.Rectangle((x, y), w, h, linewidth=2, edgecolor='r', facecolor='none')
-                ax.add_patch(rect)
-            ax.set_title(f"Tile: {tile_file}, z={z_idx+1}")
-            plt.savefig(os.path.join(output_dir, "output.png"), bbox_inches='tight')
+    main()
