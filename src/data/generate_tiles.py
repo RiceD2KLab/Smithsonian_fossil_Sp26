@@ -139,7 +139,7 @@ def main():
     """
     Main function to process all NDPI/NDPA files in the input directory.
     """
-    INPUT_DIR = "/rhf/allocations/dsci435/smithsonian_full_sp26/Images_with_annotations_for_CNN_training"
+    INPUT_DIR = "<path_to_ndpi_files>"
     OUTPUT_DIR = "output/tiled_images"
     MAGNIFICATION = 40
     TILE_SIZE = 1024
