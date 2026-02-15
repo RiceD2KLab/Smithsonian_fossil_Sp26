@@ -5,6 +5,15 @@ import os
 import numpy as np    
 import json
 
+"""
+This file provides funtionality to load NDPI and NDPA files, 
+generate tiles from the NDPI image based on the ROIs defined in the 
+NDPA annotations, and save the tiles along with their corresponding
+annotations to disk. The main function iterates through all NDPI 
+files in a specified input directory, finds the corresponding NDPA file, 
+and processes them.
+"""
+
 def compute_tile_grid(
     start_x: int,
     start_y: int,
@@ -58,8 +67,9 @@ def generate_tiles(
         output_dir: str
         ):
     """
-    Generate tiles from and NDPI file covering all ROIs in the NDPA file, 
-    and save them to disk along with their annotations.
+    Generate tiles from a single NDPI file covering all ROIs in
+    the associated NDPA file, and save them to disk along with 
+    their annotations.
     """
 
     # Generate tile grid covering all ROIs
@@ -125,6 +135,9 @@ def generate_tiles(
         json.dump(tile_to_annotations, f)
 
 def main():
+    """
+    Main function to process all NDPI/NDPA files in the input directory.
+    """
 
     INPUT_DIR = "<path_to_ndpi_files>"
     OUTPUT_DIR = "<path_to_output_directory>"
