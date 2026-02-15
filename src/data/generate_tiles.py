@@ -64,7 +64,8 @@ def generate_tiles(
         ndpa_data: NDPAData, 
         magnification: float,
         tile_size: int,
-        output_dir: str
+        overlap: float,
+        output_dir: str,
         ):
     """
     Generate tiles from a single NDPI file covering all ROIs in
@@ -76,7 +77,7 @@ def generate_tiles(
     tiles = []
     for region in ndpa_data.rois:
         bounds = bounds_to_pixels(region.bounds, magnification, ndpi_data.metadata)
-        tiles.extend(compute_tile_grid(*bounds, tile_size=tile_size, overlap=0.0))
+        tiles.extend(compute_tile_grid(*bounds, tile_size=tile_size, overlap=overlap))
 
     print(f"Generated {len(tiles)} tiles.")
 
@@ -138,24 +139,35 @@ def main():
     """
     Main function to process all NDPI/NDPA files in the input directory.
     """
-
-    INPUT_DIR = "<path_to_ndpi_files>"
-    OUTPUT_DIR = "<path_to_output_directory>"
+    INPUT_DIR = "/rhf/allocations/dsci435/smithsonian_full_sp26/Images_with_annotations_for_CNN_training"
+    OUTPUT_DIR = "output/tiled_images"
     MAGNIFICATION = 40
     TILE_SIZE = 1024
+    OVERLAP = 0.0
 
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     for file in os.listdir(INPUT_DIR):
         if file.endswith(".ndpi"):
             ndpi_path = os.path.join(INPUT_DIR, file)
             ndpa_path = ndpi_path + ".ndpa"
             if os.path.exists(ndpa_path):
-                print(f"Processing {ndpi_path} with annotations from {ndpa_path}")
+                print(f"Processing {file} with annotations from {file}.ndpa")
                 ndpi_data = NDPIData(ndpi_path)
                 ndpa_data = NDPAData(ndpa_path)
                 output_dir = os.path.join(OUTPUT_DIR, os.path.splitext(file)[0])
-                generate_tiles(ndpi_data, ndpa_data, magnification=MAGNIFICATION, tile_size=TILE_SIZE, output_dir=output_dir)
+                generate_tiles(ndpi_data, ndpa_data, magnification=MAGNIFICATION, tile_size=TILE_SIZE, overlap=OVERLAP, output_dir=output_dir)
             else:
                 print(f"Warning: No corresponding .ndpa file found for {ndpi_path}, skipping.")
+
+    # Write global metadata
+    metadata = {
+        "input_dir": INPUT_DIR,
+        "magnification": MAGNIFICATION,
+        "tile_size": TILE_SIZE,
+        "overlap": OVERLAP,
+    }
+    with open(os.path.join(OUTPUT_DIR, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
 
 if __name__ == "__main__":
     main()
