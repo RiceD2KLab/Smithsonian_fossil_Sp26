@@ -2,6 +2,14 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Tuple, List
 
+"""
+This file provides funtionality to load and interact with an NDPA file.
+In particular, it can load an NDPA file, and parse the annotations into 
+a structured data class representing both the larger ROIs (rectangles 
+demarcating annotated regions) and the individual annotations of 
+palynomorphs, with classification labels and bounding regions.
+"""
+
 # Define the types of bounding regions that can be present in the NDPA annotations
 class BoundingRegion:
     """Base class for bounding regions (circle or rectangle) in an NDPA file."""

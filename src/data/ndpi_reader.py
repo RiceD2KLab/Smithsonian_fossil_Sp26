@@ -3,7 +3,13 @@ import numpy as np
 import tifffile
 import openslide
 import zarr
-import matplotlib.pyplot as plt
+
+"""
+This file provides funtionality to load and interact with an NDPI file.
+In particular, it can load an NDPI file and related metadata such as the 
+physical-to-pixel conversion constants, and extract 3-D tiles at specified 
+magnifications from the image.
+"""
 
 @dataclass
 class FocalPlaneInfo:
@@ -154,6 +160,8 @@ def load_ndpi(ndpi_path: str) -> NDPIData:
     return data
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
     # Example usage: parse an NDPA file and print the annotations
     ndpi_path = "<file path>"
     ndpi = load_ndpi(ndpi_path)
