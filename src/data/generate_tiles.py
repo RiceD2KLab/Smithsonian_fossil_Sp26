@@ -81,10 +81,14 @@ def generate_tiles(
 
     print(f"Generated {len(tiles)} tiles.")
 
-    # Convert annotations to pixels
-    annotations = []
+    # Convert annotations to pixels and collect labels
+    annotations = []  # List of dicts: {bbox, label}
     for ann in ndpa_data.palynomorphs:
-        annotations.append(bounds_to_pixels(ann.bounds, magnification, ndpi_data.metadata))
+        bbox = bounds_to_pixels(ann.bounds, magnification, ndpi_data.metadata)
+        annotations.append({
+            "bbox": bbox,
+            "label": ann.label
+        })
 
     # For each tile, find annotations that intersect it
     tile_annotations = []  # List of (tile, [annotation_indices])
@@ -92,8 +96,8 @@ def generate_tiles(
         x0, y0, w, h = tile
         x1, y1 = x0 + w, y0 + h
         anns_in_tile = []
-        for i, ann_bbox in enumerate(annotations):
-            ax0, ay0, aw, ah = ann_bbox
+        for i, ann in enumerate(annotations):
+            ax0, ay0, aw, ah = ann["bbox"]
             ax1, ay1 = ax0 + aw, ay0 + ah
             # Check for intersection
             if not (ax1 <= x0 or ax0 >= x1 or ay1 <= y0 or ay0 >= y1):
@@ -109,7 +113,6 @@ def generate_tiles(
 
     # For each tile:
     for tile, anns_in_tile in tile_annotations:
-
         # Get the tile image from the NDPI file and save it to disk
         image = ndpi_data.get_tile(*tile, magnification=magnification)
         tile_filename = f"tile_{tile[0]}_{tile[1]}_{tile[2]}_{tile[3]}.npy"
@@ -118,9 +121,10 @@ def generate_tiles(
 
         # Standardize annotation coordinates to tile and crop
         x0, y0, w, h = tile
-        tile_ann_boxes = []
+        tile_ann_objs = []
         for i in anns_in_tile:
-            ax0, ay0, aw, ah = annotations[i]
+            ann = annotations[i]
+            ax0, ay0, aw, ah = ann["bbox"]
             rel_x = ax0 - x0
             rel_y = ay0 - y0
             crop_x = max(0, rel_x)
@@ -128,8 +132,11 @@ def generate_tiles(
             crop_w = min(aw, w - crop_x, aw - max(0, -rel_x))
             crop_h = min(ah, h - crop_y, ah - max(0, -rel_y))
             if crop_w > 0 and crop_h > 0:
-                tile_ann_boxes.append([crop_x, crop_y, crop_w, crop_h])
-        tile_to_annotations[tile_path] = tile_ann_boxes
+                tile_ann_objs.append({
+                    "bbox": [crop_x, crop_y, crop_w, crop_h],
+                    "label": ann["label"]
+                })
+        tile_to_annotations[tile_path] = tile_ann_objs
 
     # Save the mapping to a JSON file in output_dir
     with open(os.path.join(output_dir, "annotations.json"), "w") as f:
