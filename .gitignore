@@ -1,3 +1,12 @@
 env
 output
 __pycache__
+
+# JetBrains IDE settings
+.idea/
+
+# CSV data files
+*.csv
+
+# Python virtual environment
+venv/
