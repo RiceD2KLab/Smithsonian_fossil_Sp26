@@ -1,4 +1,3 @@
-import sys
 import os
 import gc
 import openslide
@@ -49,6 +48,19 @@ def generate_density_plots(df, x_label, title, output_file):
     plt.show()
 
 """
+Generate histograms for two sets of data
+"""
+def generate_histogram_plots(df, x_label, title, output_file, num_bins=8):
+    g = sns.FacetGrid(df, row="Dimension", hue="Dimension", aspect=4, height=3, palette=["red", "blue"])
+    g.map(sns.histplot, x_label, bins=num_bins)
+    g.figure.suptitle(title)
+    g.figure.tight_layout()
+    g.figure.subplots_adjust(top=0.9)
+
+    plt.savefig(output_file, format="png")
+    plt.show()
+
+"""
 Plot the image size distributions for both physical and pixel space for all NDPI slides in the given directory
 
 Output: Format and write to disk a matplotlib density plot as a png
@@ -62,9 +74,9 @@ def plot_image_size_distributions(directory):
     micron_height = []
 
     # Gather sizes
-    dir = os.scandir(directory)
+    dir_object = os.scandir(directory)
     i = 0
-    for entry in dir:
+    for entry in dir_object:
         if entry.is_dir():
             continue
 
@@ -89,13 +101,13 @@ def plot_image_size_distributions(directory):
         'Pixels': np.concatenate([np.array(pixel_width), np.array(pixel_height)]),
         'Dimension': ['Width'] * len(pixel_width) + ['Height'] * len(pixel_height)
     })
-    generate_density_plots(df, "Pixels", "Pixel Dimension Density Plots", "slide_pixel_dimensions_density_plot.png")
+    generate_histogram_plots(df, "Pixels", "Pixel Dimension Histogram", "slide_pixel_dimensions_histogram.png")
 
     df = pd.DataFrame({
         'Microns': np.concatenate([np.array(micron_width), np.array(micron_height)]),
         'Dimension': ['Width'] * len(micron_width) + ['Height'] * len(micron_height)
     })
-    generate_density_plots(df, "Microns", "Micron Dimension Density Plots", "slide_micron_dimensions_density_plot.png")
+    generate_histogram_plots(df, "Microns", "Micron Dimensions Histogram", "slide_micron_dimensions_histogram.png")
 
 """
 Produce density plots for the width and height of all regions of interest given a directory containing NDPA files
@@ -111,9 +123,9 @@ def plot_image_annotation_distributions(directory):
     roi_microns_height = []
 
     # Gather sizes
-    dir = os.scandir(directory)
+    dir_object = os.scandir(directory)
     i = 0
-    for entry in dir:
+    for entry in dir_object:
         if entry.is_dir():
             continue
 
@@ -125,8 +137,8 @@ def plot_image_annotation_distributions(directory):
         ndpi_file_path = split_file_path[0] + "." + split_file_path[1]
         _,_,mpp_x,mpp_y = extract_metadata(ndpi_file_path)
         bounding_box_dimensions = extract_rois(entry.path)
-        for tuple in bounding_box_dimensions:
-            microns_w, microns_h = tuple[0] / 1000, tuple[1] / 1000
+        for dimensions in bounding_box_dimensions:
+            microns_w, microns_h = dimensions[0] / 1000, dimensions[1] / 1000
             pixels_w, pixels_h = microns_w / mpp_x, microns_h / mpp_y
             roi_pixel_width.append(pixels_w)
             roi_pixel_height.append(pixels_h)
@@ -142,10 +154,10 @@ def plot_image_annotation_distributions(directory):
         'Pixels': np.concatenate([np.array(roi_pixel_width), np.array(roi_pixel_height)]),
         'Dimension': ['Width'] * len(roi_pixel_width) + ['Height'] * len(roi_pixel_height)
     })
-    generate_density_plots(df, "Pixels", "ROI Pixel Dimensions Density Plot", "roi_pixel_dimensions_density_plot.png")
+    generate_histogram_plots(df, "Pixels", "ROI Pixel Dimensions Histogram", "roi_pixel_dimensions_histogram.png")
 
     df = pd.DataFrame({
         'Microns': np.concatenate([np.array(roi_microns_width), np.array(roi_microns_height)]),
         'Dimension': ['Width'] * len(roi_microns_width) + ['Height'] * len(roi_microns_height)
     })
-    generate_density_plots(df, "Microns", "ROI Microns Dimensions Density Plot", "roi_microns_dimensions_density_plot.png")
+    generate_histogram_plots(df, "Microns", "ROI Micron Dimensions Histogram", "roi_microns_dimensions_histogram.png")
