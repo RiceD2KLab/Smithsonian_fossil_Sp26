@@ -240,12 +240,14 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
         slide_name = os.path.splitext(file)[0]
 
         # 1. Generate the theoretical tile grid
+        print("Step 1: Generate the theoretical tile grid")
         tiles = []
         for region in ndpa_data.rois:
             bounds = bounds_to_pixels(region.bounds, magnification, ndpi_data.metadata)
             tiles.extend(compute_tile_grid(*bounds, tile_size=tile_size, overlap=overlap))
 
         # 2. Extract global annotations in pixel coords
+        print("Step 2: Extract global annotations in pixel coords")
         global_anns = []
         for ann in ndpa_data.palynomorphs:
             bbox = bounds_to_pixels(ann.bounds, magnification, ndpi_data.metadata)
@@ -255,6 +257,7 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
             })
 
         # 3. For each tile, find which annotations intersect it
+        print("Step 3: For each tile, find which annotations intersect it")
         tile_annotations = []
         for tile in tiles:
             x0, y0, w, h = tile
@@ -268,6 +271,7 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
             tile_annotations.append((tile, anns_in_tile))
 
         # 4. Extract tile from NDPI, score it, and discard
+        print("Step 4: Extract tile from NDPI, score it, and discard")
         for tile, anns_in_tile in tile_annotations:
             image = ndpi_data.get_tile(*tile, magnification=magnification)
             # image shape is (H, W, C, Z)
@@ -276,6 +280,7 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
             tile_path_id = f"{slide_name}/tile_{tile[0]}_{tile[1]}_{tile[2]}_{tile[3]}.npy"
 
             # 4a. Dataset-wide scores
+            print("Step 4a: Dataset-wide scores")
             for z in range(n_z):
                 plane = image[:, :, :, z] if image.ndim == 4 else image
                 scores = score_region(plane)
@@ -287,6 +292,7 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
                 })
 
             # 4b. Per-ROI scores
+            print("Step 4b: Per-ROI scores")
             x0, y0, w, h = tile
             for i in anns_in_tile:
                 ann = global_anns[i]
