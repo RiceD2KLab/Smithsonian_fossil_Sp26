@@ -107,51 +107,33 @@ def load_tiles_and_annotations(input_dir: str):
 #  Focus scoring                                                         #
 # ===================================================================== #
 
-def score_region(image_rgb: np.ndarray) -> dict:
-    """Compute both focus metrics for one RGB image.
-
-    Parameters
-    ----------
-    image_rgb : np.ndarray
-        (H, W, 3) uint8 array.
-
-    Returns
-    -------
-    dict with keys ``"vol"`` and ``"tenengrad"``.
-    """
-    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+def score_gray_region(gray: np.ndarray) -> dict:
+    """Compute both focus metrics for one grayscale image."""
     return {
         "vol":       variance_of_laplacian(gray),
         "tenengrad": tenengrad(gray, 3),
     }
 
+def score_region(image_rgb: np.ndarray) -> dict:
+    """Compute both focus metrics for one RGB image."""
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    return score_gray_region(gray)
+
 
 def compute_per_roi_scores(tiles, annotations, filter_clipped=False):
-    """Score every annotated palynomorph across all focal planes.
-
-    Parameters
-    ----------
-    tiles : list[dict]
-    annotations : dict
-    filter_clipped : bool
-        If True, skip any annotation whose bounding box touches
-        the tile boundary (0 or tile size).
-
-    Returns
-    -------
-    records : list[dict]
-        One dict per (palynomorph, Z-plane) with keys:
-        ``tile_path, ann_idx, label, z_index, vol, tenengrad``
-    n_z : int
-        Number of focal planes.
-    """
+    """Score every annotated palynomorph across all focal planes."""
     records = []
+    n_z_global = 0
     for tile_info in tiles:
         rel = tile_info["path"]
         data = tile_info["data"]       # (H, W, C, Z)
         h_full, w_full = data.shape[:2]
         anns = annotations.get(rel, [])
         n_z = data.shape[3] if data.ndim == 4 else 1
+        n_z_global = max(n_z_global, n_z)
+
+        # Precompute grayscale planes
+        gray_planes = [cv2.cvtColor(data[:, :, :, z] if data.ndim == 4 else data, cv2.COLOR_RGB2GRAY) for z in range(n_z)]
 
         for ann_idx, ann in enumerate(anns):
             x, y, w, h = ann["bbox"]
@@ -163,11 +145,11 @@ def compute_per_roi_scores(tiles, annotations, filter_clipped=False):
                 if (x <= 0 or y <= 0 or x + w >= w_full or y + h >= h_full):
                     continue
 
-            for z in range(n_z):
-                plane = data[:, :, :, z] if data.ndim == 4 else data
-                crop = plane[y: y + h, x: x + w]
+            for z, gray in enumerate(gray_planes):
+                crop = gray[y: y + h, x: x + w]
                 if crop.size == 0:
                     continue
+                scores = score_gray_region(crop)
                 records.append({
                     "tile_path": rel,
                     "ann_idx":   ann_idx,
@@ -177,38 +159,106 @@ def compute_per_roi_scores(tiles, annotations, filter_clipped=False):
                     "tenengrad": scores["tenengrad"],
                     "bbox":      [x, y, w, h],
                 })
-    return records, n_z
+    return records, n_z_global
 
 
 def compute_dataset_wide_scores(tiles):
-    """Score each full tile across all focal planes.
-
-    Returns
-    -------
-    records : list[dict]
-        One dict per (tile, Z-plane).
-    n_z : int
-    """
+    """Score each full tile across all focal planes."""
     records = []
-    n_z = 0
+    n_z_global = 0
     for tile_info in tiles:
         data = tile_info["data"]
         n_z = data.shape[3] if data.ndim == 4 else 1
-        for z in range(n_z):
-            plane = data[:, :, :, z] if data.ndim == 4 else data
-            scores = score_region(plane)
+        n_z_global = max(n_z_global, n_z)
+        
+        # Precompute grayscale planes
+        gray_planes = [cv2.cvtColor(data[:, :, :, z] if data.ndim == 4 else data, cv2.COLOR_RGB2GRAY) for z in range(n_z)]
+
+        for z, gray in enumerate(gray_planes):
+            scores = score_gray_region(gray)
             records.append({
                 "tile_path": tile_info["path"],
                 "z_index":   z,
                 "vol":       scores["vol"],
                 "tenengrad": scores["tenengrad"],
             })
-    return records, n_z
+    return records, n_z_global
 
 
 # ===================================================================== #
 #  In-Memory Raw Processing Pipeline                                     #
 # ===================================================================== #
+
+# Globals for ProcessPoolExecutor worker
+_worker_ndpi_data = None
+_worker_magnification = None
+
+def _init_worker(ndpi_path, magnification):
+    global _worker_ndpi_data, _worker_magnification
+    _worker_ndpi_data = NDPIData(ndpi_path)
+    _worker_magnification = magnification
+
+def _process_tile_worker(args):
+    tile, anns_in_tile, global_anns, filter_clipped, tile_path_id = args
+    local_ds_recs = []
+    local_roi_recs = []
+    
+    image = _worker_ndpi_data.get_tile(*tile, magnification=_worker_magnification)
+    n_z_local = image.shape[3] if image.ndim == 4 else 1
+
+    # Precompute grayscale planes
+    gray_planes = []
+    for z in range(n_z_local):
+        plane = image[:, :, :, z] if image.ndim == 4 else image
+        gray_planes.append(cv2.cvtColor(plane, cv2.COLOR_RGB2GRAY))
+
+    # Dataset-wide scores
+    for z, gray in enumerate(gray_planes):
+        scores = score_gray_region(gray)
+        local_ds_recs.append({
+            "tile_path": tile_path_id,
+            "z_index":   z,
+            "vol":       scores["vol"],
+            "tenengrad": scores["tenengrad"],
+        })
+
+    # Per-ROI scores
+    x0, y0, w, h = tile
+    for i in anns_in_tile:
+        ann = global_anns[i]
+        ax0, ay0, aw, ah = ann["bbox"]
+        rel_x = ax0 - x0
+        rel_y = ay0 - y0
+
+        crop_x = max(0, rel_x)
+        crop_y = max(0, rel_y)
+        crop_w = min(aw, w - crop_x, aw - max(0, -rel_x))
+        crop_h = min(ah, h - crop_y, ah - max(0, -rel_y))
+
+        if crop_w <= 0 or crop_h <= 0:
+            continue
+
+        if filter_clipped:
+            if (crop_x <= 0 or crop_y <= 0 or crop_x + crop_w >= w or crop_y + crop_h >= h):
+                continue
+
+        for z, gray in enumerate(gray_planes):
+            crop = gray[crop_y: crop_y + crop_h, crop_x: crop_x + crop_w]
+            if crop.size == 0:
+                continue
+            scores = score_gray_region(crop)
+            local_roi_recs.append({
+                "tile_path": tile_path_id,
+                "ann_idx":   i,
+                "label":     ann["label"],
+                "z_index":   z,
+                "vol":       scores["vol"],
+                "tenengrad": scores["tenengrad"],
+                "bbox":      [crop_x, crop_y, crop_w, crop_h],
+            })
+
+    return local_ds_recs, local_roi_recs, n_z_local
+
 
 def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
                         magnification: float = 40.0, tile_size: int = 1024,
@@ -271,72 +321,19 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
                     anns_in_tile.append(i)
             tile_annotations.append((tile, anns_in_tile))
 
-        # 4. Extract tile from NDPI, score it, and discard
-        def process_tile(tile_data):
-            tile, anns_in_tile = tile_data
-            local_ds_recs = []
-            local_roi_recs = []
-            local_n_z = 0
-            image = ndpi_data.get_tile(*tile, magnification=magnification)
-            # image shape is (H, W, C, Z)
-            n_z_local = image.shape[3] if image.ndim == 4 else 1
-            local_n_z = max(local_n_z, n_z_local)
+        # 4. Extract tile from NDPI, score it, and discard via ProcessPoolExecutor
+        worker_args = []
+        for tile, anns_in_tile in tile_annotations:
             tile_path_id = f"{slide_name}/tile_{tile[0]}_{tile[1]}_{tile[2]}_{tile[3]}.npy"
+            worker_args.append((tile, anns_in_tile, global_anns, filter_clipped, tile_path_id))
 
-            # 4a. Dataset-wide scores
-            for z in range(n_z_local):
-                plane = image[:, :, :, z] if image.ndim == 4 else image
-                scores = score_region(plane)
-                local_ds_recs.append({
-                    "tile_path": tile_path_id,
-                    "z_index":   z,
-                    "vol":       scores["vol"],
-                    "tenengrad": scores["tenengrad"],
-                })
-
-            # 4b. Per-ROI scores
-            x0, y0, w, h = tile
-            for i in anns_in_tile:
-                ann = global_anns[i]
-                ax0, ay0, aw, ah = ann["bbox"]
-                rel_x = ax0 - x0
-                rel_y = ay0 - y0
-
-                # Determine standard cropped bbox within tile
-                crop_x = max(0, rel_x)
-                crop_y = max(0, rel_y)
-                crop_w = min(aw, w - crop_x, aw - max(0, -rel_x))
-                crop_h = min(ah, h - crop_y, ah - max(0, -rel_y))
-
-                if crop_w <= 0 or crop_h <= 0:
-                    continue
-
-                if filter_clipped:
-                    if (crop_x <= 0 or crop_y <= 0 or 
-                        crop_x + crop_w >= w or crop_y + crop_h >= h):
-                        continue
-
-                for z in range(n_z_local):
-                    plane = image[:, :, :, z] if image.ndim == 4 else image
-                    crop = plane[crop_y: crop_y + crop_h, crop_x: crop_x + crop_w]
-                    if crop.size == 0:
-                        continue
-                    scores = score_region(crop)
-                    local_roi_recs.append({
-                        "tile_path": tile_path_id,
-                        "ann_idx":   i,
-                        "label":     ann["label"],
-                        "z_index":   z,
-                        "vol":       scores["vol"],
-                        "tenengrad": scores["tenengrad"],
-                        "bbox":      [crop_x, crop_y, crop_w, crop_h],
-                    })
-
-            return local_ds_recs, local_roi_recs, local_n_z
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as executor:
-            for res_ds, res_roi, res_n_z in tqdm(executor.map(process_tile, tile_annotations), 
-                                                 total=len(tile_annotations), 
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=min(8, os.cpu_count() or 4),
+            initializer=_init_worker,
+            initargs=(ndpi_path, magnification)
+        ) as executor:
+            for res_ds, res_roi, res_n_z in tqdm(executor.map(_process_tile_worker, worker_args), 
+                                                 total=len(worker_args), 
                                                  desc=f"  Scoring tiles", 
                                                  unit="tile"):
                 ds_records.extend(res_ds)
