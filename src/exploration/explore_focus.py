@@ -27,6 +27,8 @@ import csv
 import json
 import os
 import sys
+import concurrent.futures
+from tqdm import tqdm
 
 import cv2
 import matplotlib.pyplot as plt
@@ -257,7 +259,6 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
             })
 
         # 3. For each tile, find which annotations intersect it
-        print("Step 3: For each tile, find which annotations intersect it")
         tile_annotations = []
         for tile in tiles:
             x0, y0, w, h = tile
@@ -271,20 +272,22 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
             tile_annotations.append((tile, anns_in_tile))
 
         # 4. Extract tile from NDPI, score it, and discard
-        print("Step 4: Extract tile from NDPI, score it, and discard")
-        for tile, anns_in_tile in tile_annotations:
+        def process_tile(tile_data):
+            tile, anns_in_tile = tile_data
+            local_ds_recs = []
+            local_roi_recs = []
+            local_n_z = 0
             image = ndpi_data.get_tile(*tile, magnification=magnification)
             # image shape is (H, W, C, Z)
-            n_z = image.shape[3] if image.ndim == 4 else 1
-            n_z_global = max(n_z_global, n_z)
+            n_z_local = image.shape[3] if image.ndim == 4 else 1
+            local_n_z = max(local_n_z, n_z_local)
             tile_path_id = f"{slide_name}/tile_{tile[0]}_{tile[1]}_{tile[2]}_{tile[3]}.npy"
 
             # 4a. Dataset-wide scores
-            print("Step 4a: Dataset-wide scores")
-            for z in range(n_z):
+            for z in range(n_z_local):
                 plane = image[:, :, :, z] if image.ndim == 4 else image
                 scores = score_region(plane)
-                ds_records.append({
+                local_ds_recs.append({
                     "tile_path": tile_path_id,
                     "z_index":   z,
                     "vol":       scores["vol"],
@@ -292,7 +295,6 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
                 })
 
             # 4b. Per-ROI scores
-            print("Step 4b: Per-ROI scores")
             x0, y0, w, h = tile
             for i in anns_in_tile:
                 ann = global_anns[i]
@@ -314,13 +316,13 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
                         crop_x + crop_w >= w or crop_y + crop_h >= h):
                         continue
 
-                for z in range(n_z):
+                for z in range(n_z_local):
                     plane = image[:, :, :, z] if image.ndim == 4 else image
                     crop = plane[crop_y: crop_y + crop_h, crop_x: crop_x + crop_w]
                     if crop.size == 0:
                         continue
                     scores = score_region(crop)
-                    roi_records.append({
+                    local_roi_recs.append({
                         "tile_path": tile_path_id,
                         "ann_idx":   i,
                         "label":     ann["label"],
@@ -329,6 +331,17 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
                         "tenengrad": scores["tenengrad"],
                         "bbox":      [crop_x, crop_y, crop_w, crop_h],
                     })
+
+            return local_ds_recs, local_roi_recs, local_n_z
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as executor:
+            for res_ds, res_roi, res_n_z in tqdm(executor.map(process_tile, tile_annotations), 
+                                                 total=len(tile_annotations), 
+                                                 desc=f"  Scoring tiles", 
+                                                 unit="tile"):
+                ds_records.extend(res_ds)
+                roi_records.extend(res_roi)
+                n_z_global = max(n_z_global, res_n_z)
 
     return roi_records, ds_records, n_z_global
 #  Helper: build ROI identifiers                                        #
