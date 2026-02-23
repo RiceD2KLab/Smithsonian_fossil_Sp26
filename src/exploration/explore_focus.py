@@ -28,6 +28,9 @@ import json
 import os
 import sys
 import concurrent.futures
+import contextlib
+import io
+import logging
 from tqdm import tqdm
 
 import cv2
@@ -287,7 +290,22 @@ def process_raw_dataset(raw_dir: str, filter_clipped: bool = False,
             continue
 
         print(f"  Processing raw slide: {file}")
-        ndpi_data = NDPIData(ndpi_path)
+        
+        # Capture stderr to intercept tifffile warnings, and suppress explicit logger
+        stderr_catcher = io.StringIO()
+        with contextlib.redirect_stderr(stderr_catcher):
+            try:
+                logging.getLogger("tifffile").setLevel(logging.ERROR)
+                ndpi_data = NDPIData(ndpi_path)
+            except Exception as e:
+                print(f"  [Skip] Failed to load NDPI data: {e}")
+                continue
+
+        stderr_output = stderr_catcher.getvalue()
+        if "coercing invalid ASCII" in stderr_output or "UnicodeDecodeError" in stderr_output:
+            print(f"  [Skip] Malformed Z-stack metadata detected in {file}. Skipping.")
+            continue
+
         ndpa_data = NDPAData(ndpa_path)
         slide_name = os.path.splitext(file)[0]
 
