@@ -1,6 +1,6 @@
-from ndpa_reader import NDPAData
-from ndpi_reader import NDPIData
-from util import bounds_to_pixels
+from src.data.ndpa_reader import NDPAData
+from src.data.ndpi_reader import NDPIData
+from src.data.util import bounds_to_pixels
 import os
 import numpy as np    
 import json
