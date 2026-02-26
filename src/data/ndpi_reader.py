@@ -101,8 +101,10 @@ class NDPIData:
         raise ValueError(f"No page found for magnification {magnification}x and z-offset {z_offset}nm")
 
     def get_z_offsets(self) -> list[int]:
-        """Return sorted unique z-offsets (nm) across all focal planes."""
-        return sorted(set(fp.z_offset_nm for fp in self.focal_planes))
+        """Return sorted unique z-offsets (nm) across all focal planes, cached after first call."""
+        if not hasattr(self, '_z_offsets'):
+            self._z_offsets = sorted(set(fp.z_offset_nm for fp in self.focal_planes))
+        return self._z_offsets
     
     def get_tile_from_page(self, page_index: int, x: int, y: int, w: int, h: int) -> np.ndarray:
         """

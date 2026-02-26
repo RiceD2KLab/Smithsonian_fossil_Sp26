@@ -4,6 +4,8 @@ from src.data.util import bounds_to_pixels
 import os
 import numpy as np    
 import json
+import h5py
+from tqdm import tqdm
 
 """
 This file provides funtionality to load NDPI and NDPA files, 
@@ -60,13 +62,14 @@ def compute_tile_grid(
     return tiles
 
 def generate_tiles(
-        ndpi_data: NDPIData, 
-        ndpa_data: NDPAData, 
+        ndpi_data: NDPIData,
+        ndpa_data: NDPAData,
         magnification: float,
         tile_size: int,
         overlap: float,
         output_dir: str,
-        ):
+        label_map: dict,
+    ):
     """
     Generate tiles from a single NDPI file covering all ROIs in
     the associated NDPA file, and save them to disk along with 
@@ -75,9 +78,11 @@ def generate_tiles(
 
     # Generate tile grid covering all ROIs
     tiles = []
+    rois = []
     for region in ndpa_data.rois:
         bounds = bounds_to_pixels(region.bounds, magnification, ndpi_data.metadata)
         tiles.extend(compute_tile_grid(*bounds, tile_size=tile_size, overlap=overlap))
+        rois.append(bounds)
 
     print(f"Generated {len(tiles)} tiles.")
 
@@ -87,8 +92,11 @@ def generate_tiles(
         bbox = bounds_to_pixels(ann.bounds, magnification, ndpi_data.metadata)
         annotations.append({
             "bbox": bbox,
-            "label": ann.label
+            "label": label_map.get(ann.label.lower(), -1)
         })
+
+        if annotations[-1]["label"] == -1:
+            print(f"Warning: Unrecognized label '{ann.label}' in annotation, assigned label -1.")
 
     # For each tile, find annotations that intersect it
     tile_annotations = []  # List of (tile, [annotation_indices])
@@ -104,67 +112,97 @@ def generate_tiles(
                 anns_in_tile.append(i)
         tile_annotations.append((tile, anns_in_tile))
     
-    # Setup output directory
-    os.makedirs(output_dir, exist_ok=True)
-    tiles_dir = os.path.join(output_dir, "tiles")
-    os.makedirs(tiles_dir, exist_ok=True)
+    # Create H5 file for this image
+    image_name = os.path.splitext(os.path.basename(ndpi_data.ndpi_path))[0]
+    h5_path = os.path.join(output_dir, f"{image_name}.h5")
+    with h5py.File(h5_path, "w") as h5f:
+        
+        # For each tile, extract the image data and save it along with the annotations
+        for tile_idx, (tile, anns_in_tile) in enumerate(tqdm(tile_annotations)):
+            image = ndpi_data.get_tile(*tile, magnification=magnification)
+            x0, y0, w, h = tile
+            bboxes = []
+            labels = []
 
-    tile_to_annotations = {}
+            # Standardize annotation coordinates to tile and crop to tile boundaries
+            for i in anns_in_tile:
+                ann = annotations[i]
+                ax0, ay0, aw, ah = ann["bbox"]
+                rel_x = ax0 - x0
+                rel_y = ay0 - y0
+                crop_x = max(0, rel_x)
+                crop_y = max(0, rel_y)
+                crop_w = min(aw, w - crop_x, aw - max(0, -rel_x))
+                crop_h = min(ah, h - crop_y, ah - max(0, -rel_y))
 
-    # For each tile:
-    for tile, anns_in_tile in tile_annotations:
-        # Get the tile image from the NDPI file and save it to disk
-        image = ndpi_data.get_tile(*tile, magnification=magnification)
-        tile_filename = f"tile_{tile[0]}_{tile[1]}_{tile[2]}_{tile[3]}.npy"
-        tile_path = os.path.join("tiles", tile_filename)
-        np.save(os.path.join(tiles_dir, tile_filename), image)
+                if crop_w > 0 and crop_h > 0:
+                    bboxes.append([crop_x, crop_y, crop_w, crop_h])
+                    labels.append(ann["label"])
 
-        # Standardize annotation coordinates to tile and crop
-        x0, y0, w, h = tile
-        tile_ann_objs = []
-        for i in anns_in_tile:
-            ann = annotations[i]
-            ax0, ay0, aw, ah = ann["bbox"]
-            rel_x = ax0 - x0
-            rel_y = ay0 - y0
-            crop_x = max(0, rel_x)
-            crop_y = max(0, rel_y)
-            crop_w = min(aw, w - crop_x, aw - max(0, -rel_x))
-            crop_h = min(ah, h - crop_y, ah - max(0, -rel_y))
-            if crop_w > 0 and crop_h > 0:
-                tile_ann_objs.append({
-                    "bbox": [crop_x, crop_y, crop_w, crop_h],
-                    "label": ann["label"]
-                })
-        tile_to_annotations[tile_path] = tile_ann_objs
+            # Save bboxes and labels as numpy arrays, or empty arrays if no annotations
+            bboxes = np.array(bboxes, dtype=np.float32) if bboxes else np.zeros((0, 4), dtype=np.float32)
+            labels = np.array(labels, dtype=np.int32) if labels else np.array([], dtype=np.int32)
 
-    # Save the mapping to a JSON file in output_dir
-    with open(os.path.join(output_dir, "annotations.json"), "w") as f:
-        json.dump(tile_to_annotations, f)
+            # Create a group for this tile and save the image and annotations
+            group = h5f.create_group(f"tile_{x0}_{y0}")
+            group.create_dataset("data", data=image, compression="gzip")
+            group.create_dataset("bboxes", data=bboxes, compression="gzip")
+            group.create_dataset("labels", data=labels, compression="gzip")
+            group.attrs["x"] = x0
+            group.attrs["y"] = y0
+            group.attrs["w"] = w
+            group.attrs["h"] = h
+            group.attrs["num_annotations"] = len(labels)
+
+        # Save image-level attributes
+        h5f.attrs["source_image"] = ndpi_data.ndpi_path
+        h5f.attrs["num_tiles"] = len(tile_annotations)
+        h5f.attrs["num_focal_planes"] = len(ndpi_data.get_z_offsets())
+        h5f.attrs["image_width"] = ndpi_data.metadata.full_width
+        h5f.attrs["image_height"] = ndpi_data.metadata.full_height
+        h5f.attrs["tile_size"] = tile_size
+        h5f.attrs["overlap"] = overlap
+        h5f.attrs["magnification"] = magnification
+        h5f.attrs["rois"] = np.array(rois, dtype=np.float32) if rois else np.zeros((0, 4), dtype=np.float32)
 
 def main():
     """
     Main function to process all NDPI/NDPA files in the input directory.
     """
-    INPUT_DIR = "<path_to_ndpi_files>"
-    OUTPUT_DIR = "output/tiled_images"
-    MAGNIFICATION = 40
+    INPUT_DIR = "/path/to/ndpi/files"
+    OUTPUT_DIR = "/path/to/output/tiles"
+    MAGNIFICATION = 20
     TILE_SIZE = 1024
     OVERLAP = 0.0
+    LABEL_MAP = {
+        "alg": 0,
+        "din": 1,
+        "fun": 2,
+        "paly": 3,
+        "pol": 4,
+        "spo": 5,
+    }
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    for file in os.listdir(INPUT_DIR):
-        if file.endswith(".ndpi"):
-            ndpi_path = os.path.join(INPUT_DIR, file)
-            ndpa_path = ndpi_path + ".ndpa"
-            if os.path.exists(ndpa_path):
-                print(f"Processing {file} with annotations from {file}.ndpa")
-                ndpi_data = NDPIData(ndpi_path)
-                ndpa_data = NDPAData(ndpa_path)
-                output_dir = os.path.join(OUTPUT_DIR, os.path.splitext(file)[0])
-                generate_tiles(ndpi_data, ndpa_data, magnification=MAGNIFICATION, tile_size=TILE_SIZE, overlap=OVERLAP, output_dir=output_dir)
-            else:
-                print(f"Warning: No corresponding .ndpa file found for {ndpi_path}, skipping.")
+    ndpi_files = [file for file in os.listdir(INPUT_DIR) if file.endswith(".ndpi")]
+    for i, file in enumerate(ndpi_files[6:7]):  # Process only the first file for debugging
+        ndpi_path = os.path.join(INPUT_DIR, file)
+        ndpa_path = ndpi_path + ".ndpa"
+        if os.path.exists(ndpa_path):
+            print(f"Processing {file.strip('.ndpi')} ({i+1}/{len(ndpi_files)})")
+            ndpi_data = NDPIData(ndpi_path)
+            ndpa_data = NDPAData(ndpa_path)
+            generate_tiles(
+                ndpi_data,
+                ndpa_data,
+                magnification=MAGNIFICATION,
+                tile_size=TILE_SIZE,
+                overlap=OVERLAP,
+                output_dir=OUTPUT_DIR,
+                label_map=LABEL_MAP
+            )
+        else:
+            print(f"Warning: No corresponding .ndpa file found for {ndpi_path}, skipping.")
 
     # Write global metadata
     metadata = {
@@ -172,6 +210,7 @@ def main():
         "magnification": MAGNIFICATION,
         "tile_size": TILE_SIZE,
         "overlap": OVERLAP,
+        "label_map": LABEL_MAP
     }
     with open(os.path.join(OUTPUT_DIR, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)

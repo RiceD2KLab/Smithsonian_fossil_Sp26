@@ -1,5 +1,5 @@
-from ndpa_reader import BoundingRegion
-from ndpi_reader import NDPIMetadata
+from src.data.ndpa_reader import BoundingRegion
+from src.data.ndpi_reader import NDPIMetadata
 from typing import Tuple
 
 def bounds_to_pixels(

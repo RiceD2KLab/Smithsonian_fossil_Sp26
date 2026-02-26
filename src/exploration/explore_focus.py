@@ -47,7 +47,7 @@ from exploration.focus_metrics import tenengrad, variance_of_laplacian
 from data.ndpi_reader import NDPIData
 from data.ndpa_reader import NDPAData
 from data.util import bounds_to_pixels
-from data.generate_tiles import compute_tile_grid
+from preprocessing.generate_tiles import compute_tile_grid
 
 # ── Matplotlib house style (academic) ─────────────────────────────────────
 plt.rcParams.update({
