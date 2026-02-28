@@ -9,13 +9,14 @@ import csv
 import json
 import os
 import random
+from typing import Optional
 
 import h5py
 import numpy as np
 import cv2
 
 
-def _load_metadata(tiles_dir: str) -> dict | None:
+def _load_metadata(tiles_dir: str) -> Optional[dict]:
     path = os.path.join(tiles_dir, "metadata.json")
     if not os.path.isfile(path):
         return None
@@ -23,7 +24,7 @@ def _load_metadata(tiles_dir: str) -> dict | None:
         return json.load(f)
 
 
-def _index_to_name_map(metadata: dict | None) -> dict[int, str]:
+def _index_to_name_map(metadata: Optional[dict]) -> dict:
     """Build label index -> category name from metadata.json label_map."""
     if not metadata or "label_map" not in metadata:
         return {}
@@ -102,7 +103,7 @@ def run(
     max_per_slide: int = 10,
     max_slides: int = 5,
     strategy: str = "first_n",
-    seed: int | None = None,
+    seed: Optional[int] = None,
 ) -> None:
     """
     Export a subset of tiles from H5 files in tiles_dir to output_dir with
