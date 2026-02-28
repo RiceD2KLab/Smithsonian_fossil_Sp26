@@ -17,6 +17,7 @@ import argparse
 import csv
 import os
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Iterator
 
 import cv2
@@ -57,6 +58,18 @@ def _list_h5_paths(input_path: str) -> list[str]:
             if f.endswith(".h5")
         )
     return []
+
+
+def _list_tile_jobs(input_path: str) -> list[tuple[str, str, str]]:
+    """List all tiles as (h5_path, image_stem, group_name) for parallel processing."""
+    jobs: list[tuple[str, str, str]] = []
+    for h5_path in _list_h5_paths(input_path):
+        image_stem = os.path.splitext(os.path.basename(h5_path))[0]
+        with h5py.File(h5_path, "r") as h5f:
+            for key in sorted(h5f.keys()):
+                if key.startswith("tile_"):
+                    jobs.append((h5_path, image_stem, key))
+    return jobs
 
 
 def iter_tiles_from_h5(input_path: str) -> Iterator[tuple[str, np.ndarray, np.ndarray, np.ndarray]]:
@@ -122,12 +135,129 @@ def _score_rgb_plane(rgb: np.ndarray) -> dict[str, float]:
     return _score_grayscale(gray)
 
 
+def _process_tile_chunk(
+    chunk: list[tuple[str, str, str]],
+    filter_clipped: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """
+    Process a list of tile jobs (h5_path, image_stem, group_name). Returns
+    (roi_records, ds_records, n_z). Used as ProcessPoolExecutor worker.
+    """
+    roi_records: list[dict[str, Any]] = []
+    ds_records: list[dict[str, Any]] = []
+    n_z_max = 0
+
+    # Group by h5_path to open each file once
+    by_file: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for h5_path, image_stem, group_name in chunk:
+        by_file[h5_path].append((image_stem, group_name))
+
+    for h5_path, group_list in by_file.items():
+        with h5py.File(h5_path, "r") as h5f:
+            for image_stem, group_name in group_list:
+                group = h5f[group_name]
+                data = np.array(group["data"])
+                bboxes = np.array(group["bboxes"])
+                labels = np.array(group["labels"])
+                if bboxes.size == 0:
+                    bboxes = bboxes.reshape(0, 4)
+                if labels.size == 0:
+                    labels = np.array([], dtype=np.int32)
+                tile_path = f"{image_stem}/{group_name}"
+
+                height, width = data.shape[0], data.shape[1]
+                n_z = data.shape[3] if data.ndim == 4 else 1
+                n_z_max = max(n_z_max, n_z)
+
+                gray_planes = [
+                    cv2.cvtColor(
+                        data[:, :, :, z] if data.ndim == 4 else data,
+                        cv2.COLOR_RGB2GRAY,
+                    )
+                    for z in range(n_z)
+                ]
+
+                for z, gray in enumerate(gray_planes):
+                    scores = _score_grayscale(gray)
+                    ds_records.append({
+                        "tile_path": tile_path,
+                        "z_index": z,
+                        "vol": scores["vol"],
+                        "tenengrad": scores["tenengrad"],
+                    })
+
+                for ann_idx in range(len(labels)):
+                    x, y, w, h = bboxes[ann_idx].tolist()
+                    x, y, w, h = int(x), int(y), int(w), int(h)
+                    label = int(labels[ann_idx])
+                    if filter_clipped:
+                        if x <= 0 or y <= 0 or x + w >= width or y + h >= height:
+                            continue
+                    for z, gray in enumerate(gray_planes):
+                        crop = gray[y : y + h, x : x + w]
+                        if crop.size == 0:
+                            continue
+                        scores = _score_grayscale(crop)
+                        roi_records.append({
+                            "tile_path": tile_path,
+                            "ann_idx": ann_idx,
+                            "label": label,
+                            "z_index": z,
+                            "vol": scores["vol"],
+                            "tenengrad": scores["tenengrad"],
+                            "bbox": [x, y, w, h],
+                        })
+
+    return roi_records, ds_records, n_z_max
+
+
+def compute_focus_scores_parallel(
+    input_path: str,
+    filter_clipped: bool = False,
+    n_workers: int = 1,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """
+    Compute focus scores by processing tiles in parallel across multiple processes.
+
+    Tiles are listed from H5, split into chunks, and each chunk is processed in
+    a worker process. Returns (roi_records, ds_records, n_z).
+    """
+    jobs = _list_tile_jobs(input_path)
+    if not jobs:
+        return [], [], 0
+
+    n_workers = min(n_workers, len(jobs), os.cpu_count() or 1)
+    n_workers = max(1, n_workers)
+    chunk_size = (len(jobs) + n_workers - 1) // n_workers
+    chunks = [
+        jobs[i : i + chunk_size]
+        for i in range(0, len(jobs), chunk_size)
+    ]
+
+    roi_records = []
+    ds_records = []
+    n_z_max = 0
+
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = {
+            executor.submit(_process_tile_chunk, chunk, filter_clipped): chunk
+            for chunk in chunks
+        }
+        for future in as_completed(futures):
+            roi_part, ds_part, n_z = future.result()
+            roi_records.extend(roi_part)
+            ds_records.extend(ds_part)
+            n_z_max = max(n_z_max, n_z)
+
+    return roi_records, ds_records, n_z_max
+
+
 def compute_focus_scores(
     tile_stream: Iterator[tuple[str, np.ndarray, np.ndarray, np.ndarray]],
     filter_clipped: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     """
-    Compute focus scores in a single pass over the tile stream.
+    Compute focus scores in a single pass over the tile stream (sequential).
 
     Returns (roi_records, ds_records, n_z). ROI records have tile_path, ann_idx,
     label, z_index, vol, tenengrad, bbox. Dataset-wide records have tile_path,
@@ -581,6 +711,13 @@ def main() -> None:
         action="store_true",
         help="Ignore annotations that touch the tile boundary",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Number of worker processes for scoring (0 = sequential, default)",
+    )
     args = parser.parse_args()
 
     h5_paths = _list_h5_paths(args.input)
@@ -590,10 +727,17 @@ def main() -> None:
 
     os.makedirs(args.output, exist_ok=True)
 
-    tile_stream = iter_tiles_from_h5(args.input)
-    roi_records, ds_records, n_z = compute_focus_scores(
-        tile_stream, filter_clipped=args.filter_clipped
-    )
+    if args.workers > 1:
+        n_workers = min(args.workers, os.cpu_count() or 1)
+        print(f"Computing focus scores in parallel ({n_workers} workers)...")
+        roi_records, ds_records, n_z = compute_focus_scores_parallel(
+            args.input, filter_clipped=args.filter_clipped, n_workers=n_workers
+        )
+    else:
+        tile_stream = iter_tiles_from_h5(args.input)
+        roi_records, ds_records, n_z = compute_focus_scores(
+            tile_stream, filter_clipped=args.filter_clipped
+        )
     print(f"Per-ROI records: {len(roi_records)}, dataset-wide: {len(ds_records)}, n_z: {n_z}")
 
     export_csv(roi_records, ds_records, args.output)
