@@ -9,38 +9,13 @@ from src.data.ndpi_reader import NDPIData
 """
 Calculates annotation density for an NDPI whole-slide image:
 
-    density = number of palynomorph annotations
-              ───────────────────────────────────
-              number of 1024 × 1024 tiles in the ROI bounding box
-
 The tile count is computed from the bounding box of the ROI rectangle(s)
 drawn in the NDPA file.
-
-Coordinate system note
-──────────────────────
-NDPA coordinates are in nanometres in Hamamatsu's physical coordinate system,
-which is centred on the slide centre, not the top-left pixel corner.
-The correct pixel conversion is:
-
-    px_x = (nm_x - x_offset_nm) * 0.001 / mpp_x  +  full_width  / 2
-    px_y = (nm_y - y_offset_nm) * 0.001 / mpp_y  +  full_height / 2
-
-where x_offset_nm / y_offset_nm come from the NDPI metadata
-(hamamatsu.XOffsetFromSlideCentre / YOffsetFromSlideCentre).
-
-Usage
-──────────────────────
-    python ndpi_annotation_density.py --ndpi <slide.ndpi> --ndpa <slide.ndpi.ndpa>
-    python ndpi_annotation_density.py --ndpi <slide.ndpi> --ndpa <slide.ndpi.ndpa> --tile-size 512
 """
 
 TILE_SIZE_PX = 1024
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Coordinate conversion
-# ─────────────────────────────────────────────────────────────────────────────
-
 def nm_to_px(
     nm_x: float,
     nm_y: float,
@@ -59,10 +34,7 @@ def nm_to_px(
     return px_x, px_y
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Core density calculation
-# ─────────────────────────────────────────────────────────────────────────────
-
 def compute_density(
     ndpa_path: str,
     ndpi_path: str,
@@ -71,15 +43,13 @@ def compute_density(
     """
     Compute annotation density (annotations per tile) over the ROI bounding box.
 
-    Parameters
-    ----------
-    ndpa_path : Path to the .ndpa annotation file.
-    ndpi_path : Path to the companion .ndpi slide file.
-    tile_size : Edge length of each square tile in pixels (default 1024).
+    Parameters:
+        ndpa_path : Path to the .ndpa annotation file.
+        ndpi_path : Path to the companion .ndpi slide file.
+        tile_size : Edge length of each square tile in pixels (default 1024).
 
-    Returns
-    -------
-    dict with result fields (see keys below).
+    Returns:
+        dict with result fields (see keys below).
     """
     ndpa = NDPAData(ndpa_path)
     ndpi = NDPIData(ndpi_path)
@@ -89,7 +59,6 @@ def compute_density(
 
     n_annotations = len(ndpa.palynomorphs)
 
-    # ── ROI bounding box in pixel space ───────────────────────────────────────
     # Convert every ROI rectangle corner to pixel space and sum
     # up the total number of tiles across all ROIs
 
@@ -109,7 +78,6 @@ def compute_density(
         area_w = x1 - x0
         area_h = y1 - y0
 
-        # ── Tile count ────────────────────────────────────────────────────────────
         # Use ceiling so partial edge tiles are counted.
         tiles_x = math.ceil(area_w / tile_size)
         tiles_y = math.ceil(area_h / tile_size)
@@ -125,14 +93,10 @@ def compute_density(
         "tile_size":      tile_size,
     }
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 # CLI
-# ─────────────────────────────────────────────────────────────────────────────
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Compute palynomorph annotation density per tile within the NDPA ROI."
+        description="Compute palynomorph annotation density per tile."
     )
     parser.add_argument("--ndpi", required=True, help="Path to the .ndpi slide file.")
     parser.add_argument("--ndpa", required=True, help="Path to the .ndpa annotation file.")
