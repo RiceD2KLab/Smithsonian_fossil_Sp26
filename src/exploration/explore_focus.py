@@ -27,6 +27,7 @@ import matplotlib.ticker as ticker
 import numpy as np
 
 from src.exploration.focus_metrics import tenengrad, variance_of_laplacian
+from src.exploration.h5_utils import list_h5_paths, list_tile_jobs
 
 plt.rcParams.update({
     "font.family": "serif",
@@ -47,31 +48,6 @@ COLOR_TEN = "#E85D04"
 
 # H5 data loading
 
-def _list_h5_paths(input_path: str) -> list[str]:
-    """Return paths to H5 files: either the single file or all .h5 in the directory."""
-    if os.path.isfile(input_path) and input_path.endswith(".h5"):
-        return [input_path]
-    if os.path.isdir(input_path):
-        return sorted(
-            os.path.join(input_path, f)
-            for f in os.listdir(input_path)
-            if f.endswith(".h5")
-        )
-    return []
-
-
-def _list_tile_jobs(input_path: str) -> list[tuple[str, str, str]]:
-    """List all tiles as (h5_path, image_stem, group_name) for parallel processing."""
-    jobs: list[tuple[str, str, str]] = []
-    for h5_path in _list_h5_paths(input_path):
-        image_stem = os.path.splitext(os.path.basename(h5_path))[0]
-        with h5py.File(h5_path, "r") as h5f:
-            for key in sorted(h5f.keys()):
-                if key.startswith("tile_"):
-                    jobs.append((h5_path, image_stem, key))
-    return jobs
-
-
 def iter_tiles_from_h5(input_path: str) -> Iterator[tuple[str, np.ndarray, np.ndarray, np.ndarray]]:
     """
     Returns an iterator over (tile_path, data, bboxes, labels) for every tile in the H5 output.
@@ -79,7 +55,7 @@ def iter_tiles_from_h5(input_path: str) -> Iterator[tuple[str, np.ndarray, np.nd
     tile_path is "{image_stem}/tile_{x}_{y}". data shape is (H, W, C, Z).
     bboxes is (N, 4) float, labels is (N,) int.
     """
-    for h5_path in _list_h5_paths(input_path):
+    for h5_path in list_h5_paths(input_path):
         image_stem = os.path.splitext(os.path.basename(h5_path))[0]
         with h5py.File(h5_path, "r") as h5f:
             for key in sorted(h5f.keys()):
@@ -222,7 +198,7 @@ def compute_focus_scores_parallel(
     Tiles are listed from H5, split into chunks, and each chunk is processed in
     a worker process. Returns (roi_records, ds_records, n_z).
     """
-    jobs = _list_tile_jobs(input_path)
+    jobs = list_tile_jobs(input_path)
     if not jobs:
         return [], [], 0
 
@@ -720,7 +696,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    h5_paths = _list_h5_paths(args.input)
+    h5_paths = list_h5_paths(args.input)
     if not h5_paths:
         print("No H5 files found at", args.input)
         return
