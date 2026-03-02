@@ -54,6 +54,6 @@ def process_h5_file(h5_path):
 if __name__ == "__main__":
 
     INPUT_DIR = "/path/to/h5/files"
-    for fname in tqdm(os.listdir(INPUT_DIR)):
+    for fname in os.listdir(INPUT_DIR):
         if fname.endswith('.h5'):
             process_h5_file(os.path.join(INPUT_DIR, fname))
