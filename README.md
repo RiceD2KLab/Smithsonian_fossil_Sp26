@@ -51,8 +51,8 @@
 **Clone the repository:**
    
 ```bash
-git clone --recurse-submodules https://github.com/RiceD2KLab/Smithsonian_fossil_F25.git
-cd Smithsonian_fossil_F25
+git clone --recurse-submodules https://github.com/RiceD2KLab/Smithsonian_fossil_Sp26.git
+cd Smithsonian_fossil_Sp26
 ```
 
 **Install dependencies:**
