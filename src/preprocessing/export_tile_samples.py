@@ -1,11 +1,8 @@
 """
-Export a subset of tiles from generate_tiles H5 outputs to images
-with annotations drawn, plus a manifest mapping each image to the original
-slide and tile location for third-party verification.
+Export a subset of tiles from generate_tiles H5 outputs to annotated images.
 """
 
 import argparse
-import csv
 import json
 import os
 import random
@@ -72,7 +69,8 @@ def _draw_annotations(img: np.ndarray, bboxes: np.ndarray, labels: np.ndarray, i
         label_id = int(labels[i]) if i < len(labels) else -1
         label_name = index_to_name.get(label_id, str(label_id))
         cv2.rectangle(out, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        cv2.putText(out, f"{label_name} {i}", (x, max(0, y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+        # Only show the label name
+        cv2.putText(out, label_name, (x, max(0, y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
     return cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
 
 
@@ -106,8 +104,8 @@ def run(
     seed: Optional[int] = None,
 ) -> None:
     """
-    Export a subset of tiles from H5 files in tiles_dir to output_dir with
-    images and manifest files.
+    Export a subset of tiles from H5 files in tiles_dir to output_dir as
+    annotated images.
     """
     os.makedirs(output_dir, exist_ok=True)
     images_dir = os.path.join(output_dir, "images")
@@ -126,7 +124,6 @@ def run(
     if max_slides is not None:
         h5_files = h5_files[:max_slides]
 
-    manifest_entries: list[dict] = []
     ext = ".jpeg"
 
     for h5_name in h5_files:
@@ -136,9 +133,6 @@ def run(
         os.makedirs(slide_images_dir, exist_ok=True)
 
         with h5py.File(h5_path, "r") as h5f:
-            source_ndpi = h5f.attrs.get("source_image", "")
-            magnification = float(h5f.attrs.get("magnification", 0))
-            tile_size = int(h5f.attrs.get("tile_size", 0))
             tile_keys = _tile_groups(h5f)
             selected = _select_tile_keys(tile_keys, h5f, strategy, max_per_slide, rng)
 
@@ -146,77 +140,15 @@ def run(
                 grp = h5f[group_name]
                 x_slide = int(grp.attrs["x"])
                 y_slide = int(grp.attrs["y"])
-                w = int(grp.attrs["w"])
-                h = int(grp.attrs["h"])
-                num_annotations = int(grp.attrs.get("num_annotations", 0))
-
-                # Build per-annotation records for manifest (tile-local bbox + label name).
-                bboxes = grp["bboxes"][:]
-                labels = grp["labels"][:]
-                annotations_list = []
-                for i in range(len(bboxes)):
-                    bbox = bboxes[i].tolist()
-                    lid = int(labels[i]) if i < len(labels) else -1
-                    annotations_list.append({
-                        "bbox_tile": bbox,
-                        "label_id": lid,
-                        "label_name": index_to_name.get(lid, str(lid)),
-                    })
 
                 out_filename = f"tile_{x_slide}_{y_slide}{ext}"
                 out_path = os.path.join(slide_images_dir, out_filename)
                 _export_tile_image(grp, out_path, index_to_name)
 
-                # One manifest row per exported tile: slide path, tile position, and annotation list.
-                rel_image_path = os.path.join("images", image_name, out_filename)
-                entry = {
-                    "source_ndpi": source_ndpi,
-                    "source_h5": h5_path,
-                    "tile_group": group_name,
-                    "x_slide": x_slide,
-                    "y_slide": y_slide,
-                    "w": w,
-                    "h": h,
-                    "exported_image": rel_image_path,
-                    "magnification": magnification,
-                    "tile_size": tile_size,
-                    "num_annotations": num_annotations,
-                    "annotations": annotations_list,
-                }
-                manifest_entries.append(entry)
-
-    # Full manifest: one object per tile with nested annotations list (for tooling).
-    manifest_json_path = os.path.join(output_dir, "manifest.json")
-    with open(manifest_json_path, "w") as f:
-        json.dump(manifest_entries, f, indent=2)
-
-    # Flat CSV of the same tiles (no nested annotations) for spreadsheet review.
-    csv_path = os.path.join(output_dir, "manifest.csv")
-    if manifest_entries:
-        fieldnames = [
-            "source_ndpi", "source_h5", "tile_group", "x_slide", "y_slide", "w", "h",
-            "exported_image", "magnification", "tile_size", "num_annotations",
-        ]
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-            writer.writeheader()
-            for e in manifest_entries:
-                row = {k: e[k] for k in fieldnames if k in e}
-                writer.writerow(row)
-
-    # README.txt
-    readme_path = os.path.join(output_dir, "README.txt")
-    with open(readme_path, "w") as f:
-        f.write(
-            "Exported tile samples for 1:1 verification. "
-            "manifest.csv and manifest.json map each image to the original slide path and tile position (x_slide, y_slide). "
-            "Images show the 12th focal plane only; boxes and labels are the annotations from the H5 tiles.\n"
-        )
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Export a subset of tiles from generate_tiles H5 output to images and a manifest for verification."
+        description="Export a subset of tiles from generate_tiles H5 output to annotated images."
     )
     parser.add_argument(
         "tiles_dir",
@@ -224,7 +156,7 @@ def main() -> None:
     )
     parser.add_argument(
         "output_dir",
-        help="Directory to write exported images, manifest.json, manifest.csv, and README.txt",
+        help="Directory to write exported images",
     )
     parser.add_argument(
         "--max-per-slide",
