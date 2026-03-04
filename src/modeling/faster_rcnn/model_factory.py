@@ -1,11 +1,10 @@
-import torch
 from torch import nn
 from torchvision.models import resnet101, ResNet101_Weights
 from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.backbone_utils import _resnet_fpn_extractor
 from torchvision.models.detection.faster_rcnn import FastRCNNConvFCHead, RPNHead, _default_anchorgen
 
-def fasterrcnn_resnet101_fpn_v2(num_classes=2, trainable_backbone_layers=3):
+def fasterrcnn_resnet101_fpn_v2(num_classes=2, trainable_backbone_layers=3) -> nn.Module:
     """
     Constructs a Faster-RCNN model with a ResNet-101-FPN backbone. This implementation is a modification of
     torchvision.models.detection.fasterrcnn_resnet50_fpn_v2, which uses a ResNet-50-FPN backbone.
