@@ -2,69 +2,70 @@
 dataset.py — PyTorch Dataset for H5-backed palynomorph tile data.
 
 Each .h5 file corresponds to one slide image and contains tile groups named
-``tile_<x>_<y>``. Every group stores three datasets:
+``tile_<x>_<y>``. Every group stores five datasets:
 
-    data   (H, W, C, Z)  uint8  — RGB image stack across focal planes
-    bboxes (N, 4)        float  — bounding boxes in XYWH pixel format
-    labels (N,)          int    — integer class labels (1-indexed)
+    data                (H, W, C, Z)  uint8  — RGB image stack across focal planes
+    bboxes              (N, 4)        float  — bounding boxes in XYWH pixel format
+    labels              (N,)          int    — integer class labels (1-indexed)
+    focal_plane_ranking (Z,)          int64  — Z indices ranked sharpest-first
+    focus_stacked       (H, W, C)     uint8  — precomputed focus-stacked RGB image
 
-The dataset automatically selects the sharpest focal plane per tile using the
-Variance of Laplacian metric, converts bboxes to XYXY format expected by
-torchvision detection models, and filters out degenerate boxes (area < 16 px²).
+The dataset supports two image modes (see ``ImageMode``):
+    - BEST_PLANE:   reads ``focal_plane_ranking[0]`` to select the sharpest Z plane
+                    from ``data`` without any manual sharpness computation.
+    - FOCUS_STACK:  reads the precomputed ``focus_stacked`` image directly.
+
+Bboxes are converted from XYWH (H5 storage format) to XYXY (torchvision format),
+and degenerate boxes (area < 16 px² or extreme aspect ratio) are filtered out.
 
 Dependencies:
-    opencv-python, h5py, numpy, torch, torchvision, Pillow
+    h5py, numpy, torch, torchvision, Pillow
 
 Typical usage:
     from torchvision import transforms
-    from dataset import TileDataset
+    from dataset import TileDataset, ImageMode
 
     transform = transforms.Compose([transforms.ToTensor()])
-    dataset = TileDataset(h5_root="data/tiles", transform=transform)
+
+    # Use the precomputed best focal plane
+    dataset = TileDataset(h5_root="data/tiles", mode=ImageMode.BEST_PLANE, transform=transform)
+
+    # Use the precomputed focus-stacked image
+    dataset = TileDataset(h5_root="data/tiles", mode=ImageMode.FOCUS_STACK, transform=transform)
+
     image, target = dataset[0]
 """
 
 import os
+from enum import Enum
 from typing import Callable, Optional
 
-import cv2
 import h5py
 import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from src.exploration.focus_metrics import variance_of_laplacian
 from src.exploration.h5_utils import list_tile_jobs
 
 
-# Module-level focus utility
+# Image mode selection
 
-def _best_z_index(data: np.ndarray) -> int:
+class ImageMode(Enum):
     """
-    Select the index of the sharpest focal plane in a multi-plane image stack.
+    Controls which precomputed image is loaded from the H5 file per tile.
 
-    Iterates over all Z planes, converts each to grayscale, computes the
-    Variance of Laplacian via ``focus_metrics.variance_of_laplacian``, and
-    returns the index of the highest-scoring plane.
-
-    Args:
-        data: Image stack of shape (H, W, C, Z). If ndim < 4, returns 0.
-
-    Returns:
-        Integer Z index of the sharpest focal plane.
+    Attributes:
+        BEST_PLANE:  Reads ``focal_plane_ranking[0]`` to index into ``data``
+                     (H, W, C, Z), returning the single sharpest focal plane
+                     as an (H, W, C) image.
+        FOCUS_STACK: Reads the precomputed ``focus_stacked`` dataset directly,
+                     returning a single (H, W, C) image that combines sharpness
+                     across all focal planes.
     """
-    n_z = data.shape[3] if data.ndim == 4 else 1
-    if n_z == 1:
-        return 0
 
-    scores = []
-    for z in range(n_z):
-        plane = data[:, :, :, z]
-        gray = cv2.cvtColor(plane, cv2.COLOR_RGB2GRAY)
-        scores.append(variance_of_laplacian(gray))
-
-    return int(np.argmax(scores))
+    BEST_PLANE = "best_plane"
+    FOCUS_STACK = "focus_stack"
 
 
 # Dataset
@@ -75,12 +76,16 @@ class TileDataset(Dataset):
 
     At construction time the dataset calls ``h5_utils.list_tile_jobs`` to
     build an index of all tile groups found across every H5 file. Each
-    ``__getitem__`` call opens the relevant H5 group, picks the sharpest
-    focal plane, and returns a (image, target) pair ready for use with
-    torchvision Faster R-CNN / DETR style detection pipelines.
+    ``__getitem__`` call opens the relevant H5 group, reads the appropriate
+    precomputed image according to ``mode``, and returns a (image, target)
+    pair ready for use with torchvision Faster R-CNN / DETR style detection
+    pipelines.
 
     Args:
         h5_root:   Path to a directory of ``.h5`` files, or to a single ``.h5`` file.
+        mode:      ``ImageMode.BEST_PLANE`` to load the sharpest focal plane via
+                   ``focal_plane_ranking``, or ``ImageMode.FOCUS_STACK`` to load
+                   the precomputed focus-stacked image. Defaults to ``ImageMode.BEST_PLANE``.
         transform: Optional callable (e.g. ``torchvision.transforms.ToTensor()``)
                    applied to the PIL image before it is returned.
 
@@ -89,13 +94,42 @@ class TileDataset(Dataset):
                per tile discovered during initialisation.
     """
 
-    def __init__(self, h5_root: str, transform: Optional[Callable] = None):
+    def __init__(
+        self,
+        h5_root: str,
+        mode: ImageMode = ImageMode.BEST_PLANE,
+        transform: Optional[Callable] = None,
+    ):
         self.h5_root = h5_root
+        self.mode = mode
         self.transform = transform
+
+        # Delegate file discovery and tile indexing to the shared utility
         self.tiles: list[tuple[str, str, str]] = list_tile_jobs(h5_root)
 
 
     # Internal helpers
+
+    def _load_frame(self, group: h5py.Group) -> np.ndarray:
+        """
+        Load a single (H, W, C) uint8 image frame from an open H5 tile group.
+
+        Selects the image according to ``self.mode``:
+            - BEST_PLANE:  indexes ``data`` at ``focal_plane_ranking[0]``.
+            - FOCUS_STACK: reads ``focus_stacked`` directly.
+
+        Args:
+            group: Open ``h5py.Group`` for the tile (e.g. ``h5f["tile_x_y"]``).
+
+        Returns:
+            numpy array of shape (H, W, C) and dtype uint8.
+        """
+        if self.mode == ImageMode.FOCUS_STACK:
+            return np.array(group["focus_stacked"])
+
+        # BEST_PLANE: use the first entry of the precomputed ranking
+        best_z = int(np.array(group["focal_plane_ranking"])[0])
+        return np.array(group["data"])[:, :, :, best_z]
 
     def _build_target(
         self,
@@ -107,8 +141,8 @@ class TileDataset(Dataset):
         Build the detection target dictionary for one tile.
 
         Converts bounding boxes from XYWH (H5 storage format) to XYXY
-        (torchvision format), discards degenerate boxes (area < 16 px²), and
-        packages everything into tensors.
+        (torchvision format), discards degenerate boxes (area < 16 px² or
+        extreme aspect ratio), and packages everything into tensors.
 
         Args:
             bboxes_xywh: Float array of shape (N, 4) with columns [x, y, w, h]
@@ -129,7 +163,7 @@ class TileDataset(Dataset):
         if bboxes_xywh.size > 0 and labels_raw.size > 0:
             for (x, y, w, h), label in zip(bboxes_xywh.tolist(), labels_raw.tolist()):
                 x, y, w, h = int(x), int(y), int(w), int(h)
-                if w > 0 and h > 0 and w * h >= 16 and not (h <= 0.25 * w or w <= 0.25 * h): # check for aspect ratio to catch cropped annotation boxes
+                if w > 0 and h > 0 and w * h >= 16 and not (h <= 0.25 * w or w <= 0.25 * h):  # check for aspect ratio to catch cropped annotation boxes
                     boxes.append([x, y, x + w, y + h])  # XYWH → XYXY
                     labels.append(int(label))
 
@@ -169,8 +203,8 @@ class TileDataset(Dataset):
         """
         Load and return the image–target pair for the tile at position ``idx``.
 
-        Opens the corresponding H5 group, selects the sharpest focal plane via
-        Variance of Laplacian, converts the frame to a PIL Image, applies any
+        Opens the corresponding H5 group, loads the image via ``_load_frame``
+        according to ``self.mode``, converts it to a PIL Image, applies any
         configured transform, and builds the detection target dict.
 
         Args:
@@ -178,21 +212,17 @@ class TileDataset(Dataset):
 
         Returns:
             Tuple of:
-                image  — PIL Image (or transformed tensor) of shape (C, H, W)
-                         representing the sharpest focal plane of the tile.
+                image  — PIL Image (or transformed tensor) of shape (C, H, W).
                 target — Dict as described in ``_build_target``.
         """
         h5_path, _image_stem, group_name = self.tiles[idx]
 
         with h5py.File(h5_path, "r") as h5f:
             group = h5f[group_name]
-            data = np.array(group["data"])          # (H, W, C, Z)
-            bboxes_xywh = np.array(group["bboxes"]) # (N, 4) XYWH
-            labels_raw = np.array(group["labels"])  # (N,)
+            frame = self._load_frame(group)             # (H, W, C)
+            bboxes_xywh = np.array(group["bboxes"])     # (N, 4) XYWH
+            labels_raw = np.array(group["labels"])      # (N,)
 
-        # Pick the in-focus plane and convert to PIL Image
-        best_z = _best_z_index(data)
-        frame = data[:, :, :, best_z] if data.ndim == 4 else data  # (H, W, C)
         image = Image.fromarray(frame.astype(np.uint8), mode="RGB")
 
         if self.transform:
