@@ -55,7 +55,7 @@ def eval_one_epoch(
         model: nn.Module,
         dataloader: DataLoader,
         device: torch.device
-) -> Dict:
+) -> dict:
     """
     Computes the mAP metric across the entire dataset.
 
