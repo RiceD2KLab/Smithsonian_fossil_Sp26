@@ -28,14 +28,35 @@ def split_data(image_dir, seed=None):
     return {"train": train, "val": val, "test": test}
 
 if __name__ == "__main__":
-    INPUT_DIR = "/path/to/h5/files"
-    OUTPUT_PATH = "/path/to/output/train_val_test.json"
-    splits = split_data(INPUT_DIR, seed=42)
-
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w") as f:
-        json.dump(splits, f, indent=2)
+    import argparse
     
-    print(splits)
-    print(len(splits["train"]), len(splits["val"]), len(splits["test"]))
+    parser = argparse.ArgumentParser(description="Split data into train, val, and test sets.")
+    parser.add_argument("--input_dir", type=str, required=True, help="Path to input h5 files directory.")
+    parser.add_argument("--output_dir", type=str, required=True, help="Path to output directory to save splits.")
+    parser.add_argument("--seed", type=int, default=67, help="Random seed for splitting.")
+    
+    args = parser.parse_args()
+
+    splits = split_data(args.input_dir, seed=args.seed)
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Save splits into separate text files
+    for split_name, files in splits.items():
+        if split_name == "train":
+            filename = "training_set.txt"
+        elif split_name == "val":
+            filename = "val_set.txt"
+        elif split_name == "test":
+            filename = "test_set.txt"
+        else:
+            filename = f"{split_name}_set.txt"
+            
+        output_path = os.path.join(args.output_dir, filename)
+        with open(output_path, "w") as f:
+            for file_name in files:
+                f.write(f"{file_name}\n")
+    
+    print(f"Saved splits to {args.output_dir}")
+    print(f"Train: {len(splits['train'])}, Val: {len(splits['val'])}, Test: {len(splits['test'])}")
     
