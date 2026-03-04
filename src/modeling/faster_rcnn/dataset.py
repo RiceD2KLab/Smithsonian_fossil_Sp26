@@ -129,7 +129,7 @@ class TileDataset(Dataset):
         if bboxes_xywh.size > 0 and labels_raw.size > 0:
             for (x, y, w, h), label in zip(bboxes_xywh.tolist(), labels_raw.tolist()):
                 x, y, w, h = int(x), int(y), int(w), int(h)
-                if w > 0 and h > 0 and w * h >= 16:
+                if w > 0 and h > 0 and w * h >= 16 and not (h <= 0.25 * w or w <= 0.25 * h): # check for aspect ratio to catch cropped annotation boxes
                     boxes.append([x, y, x + w, y + h])  # XYWH → XYXY
                     labels.append(int(label))
 
