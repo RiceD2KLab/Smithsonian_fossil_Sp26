@@ -41,22 +41,10 @@ if __name__ == "__main__":
 
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Save splits into separate text files
-    for split_name, files in splits.items():
-        if split_name == "train":
-            filename = "training_set.txt"
-        elif split_name == "val":
-            filename = "val_set.txt"
-        elif split_name == "test":
-            filename = "test_set.txt"
-        else:
-            filename = f"{split_name}_set.txt"
-            
-        output_path = os.path.join(args.output_dir, filename)
-        with open(output_path, "w") as f:
-            for file_name in files:
-                f.write(f"{file_name}\n")
+    output_path = os.path.join(args.output_dir, "train_val_test.json")
+    with open(output_path, "w") as f:
+        json.dump(splits, f, indent=2)
     
-    print(f"Saved splits to {args.output_dir}")
+    print(f"Saved splits to {output_path}")
     print(f"Train: {len(splits['train'])}, Val: {len(splits['val'])}, Test: {len(splits['test'])}")
     
