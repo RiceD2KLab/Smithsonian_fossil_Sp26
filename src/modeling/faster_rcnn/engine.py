@@ -50,6 +50,7 @@ def train_one_epoch(
         i += 1
     return epoch_loss / len(train_dataloader)
 
+
 def eval_one_epoch(
         model: nn.Module,
         dataloader: DataLoader,
