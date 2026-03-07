@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 
-from src.exploration.focus_metrics import tenengrad, variance_of_laplacian
+from src.exploration.focus_metrics import tenengrad, variance_of_laplacian, percentile_vol, percentile_tenengrad
 from src.exploration.h5_utils import list_h5_paths, list_tile_jobs
 
 plt.rcParams.update({
@@ -98,10 +98,12 @@ def load_single_tile_data(input_path: str, tile_path: str) -> np.ndarray | None:
 # Focus scoring
 
 def _score_grayscale(gray: np.ndarray) -> dict[str, float]:
-    """Compute VoL and Tenengrad for a single grayscale image."""
+    """Compute VoL, Tenengrad, percentile VoL, and percentile Tenengrad for a single grayscale image."""
     return {
         "vol": variance_of_laplacian(gray),
         "tenengrad": tenengrad(gray, 3),
+        "pvol": percentile_vol(gray, 75.0),
+        "ptenengrad": percentile_tenengrad(gray, 3, 75.0),
     }
 
 
@@ -160,6 +162,8 @@ def _process_tile_chunk(
                         "z_index": z,
                         "vol": scores["vol"],
                         "tenengrad": scores["tenengrad"],
+                        "pvol": scores["pvol"],
+                        "ptenengrad": scores["ptenengrad"],
                     })
 
                 for ann_idx in range(len(labels)):
@@ -181,6 +185,8 @@ def _process_tile_chunk(
                             "z_index": z,
                             "vol": scores["vol"],
                             "tenengrad": scores["tenengrad"],
+                            "pvol": scores["pvol"],
+                            "ptenengrad": scores["ptenengrad"],
                             "bbox": [x, y, w, h],
                         })
 
@@ -236,8 +242,8 @@ def compute_focus_scores(
     Compute focus scores in a single pass over the tile stream (sequential).
 
     Returns (roi_records, ds_records, n_z). ROI records have tile_path, ann_idx,
-    label, z_index, vol, tenengrad, bbox. Dataset-wide records have tile_path,
-    z_index, vol, tenengrad.
+    label, z_index, vol, tenengrad, pvol, ptenengrad, bbox. Dataset-wide records have tile_path,
+    z_index, vol, tenengrad, pvol, ptenengrad.
     """
     roi_records: list[dict[str, Any]] = []
     ds_records: list[dict[str, Any]] = []
@@ -263,6 +269,8 @@ def compute_focus_scores(
                 "z_index": z,
                 "vol": scores["vol"],
                 "tenengrad": scores["tenengrad"],
+                "pvol": scores["pvol"],
+                "ptenengrad": scores["ptenengrad"],
             })
 
         for ann_idx in range(len(labels)):
@@ -286,6 +294,8 @@ def compute_focus_scores(
                     "z_index": z,
                     "vol": scores["vol"],
                     "tenengrad": scores["tenengrad"],
+                    "pvol": scores["pvol"],
+                    "ptenengrad": scores["ptenengrad"],
                     "bbox": [x, y, w, h],
                 })
 
@@ -311,21 +321,35 @@ def plot_best_z_histogram(
 
     best_vol = [max(recs, key=lambda r: r["vol"])["z_index"] for recs in roi_by_key.values()]
     best_ten = [max(recs, key=lambda r: r["tenengrad"])["z_index"] for recs in roi_by_key.values()]
+    best_pvol = [max(recs, key=lambda r: r["pvol"])["z_index"] for recs in roi_by_key.values()]
+    best_pten = [max(recs, key=lambda r: r["ptenengrad"])["z_index"] for recs in roi_by_key.values()]
 
     z_bins = np.arange(-0.5, n_z + 0.5, 1)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharey=True)
 
-    axes[0].hist(best_vol, bins=z_bins, color=COLOR_VOL, edgecolor="white", linewidth=0.8, alpha=0.85)
-    axes[0].set_title("Variance of Laplacian\nBest Focal Plane per Palynomorph")
-    axes[0].set_xlabel("Focal Plane Index (Z)")
-    axes[0].set_ylabel("Number of Palynomorphs")
-    axes[0].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-    axes[0].yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    axes[0, 0].hist(best_vol, bins=z_bins, color=COLOR_VOL, edgecolor="white", linewidth=0.8, alpha=0.85)
+    axes[0, 0].set_title("Variance of Laplacian\nBest Focal Plane per Palynomorph")
+    axes[0, 0].set_xlabel("Focal Plane Index (Z)")
+    axes[0, 0].set_ylabel("Number of Palynomorphs")
+    axes[0, 0].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    axes[0, 0].yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
-    axes[1].hist(best_ten, bins=z_bins, color=COLOR_TEN, edgecolor="white", linewidth=0.8, alpha=0.85)
-    axes[1].set_title("Tenengrad Gradient\nBest Focal Plane per Palynomorph")
-    axes[1].set_xlabel("Focal Plane Index (Z)")
-    axes[1].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    axes[0, 1].hist(best_ten, bins=z_bins, color=COLOR_TEN, edgecolor="white", linewidth=0.8, alpha=0.85)
+    axes[0, 1].set_title("Tenengrad Gradient\nBest Focal Plane per Palynomorph")
+    axes[0, 1].set_xlabel("Focal Plane Index (Z)")
+    axes[0, 1].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+    axes[1, 0].hist(best_pvol, bins=z_bins, color=COLOR_VOL, edgecolor="white", linewidth=0.8, alpha=0.85)
+    axes[1, 0].set_title("Percentile VoL (p=75)\nBest Focal Plane per Palynomorph")
+    axes[1, 0].set_xlabel("Focal Plane Index (Z)")
+    axes[1, 0].set_ylabel("Number of Palynomorphs")
+    axes[1, 0].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    axes[1, 0].yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+    axes[1, 1].hist(best_pten, bins=z_bins, color=COLOR_TEN, edgecolor="white", linewidth=0.8, alpha=0.85)
+    axes[1, 1].set_title("Percentile Tenengrad (p=75)\nBest Focal Plane per Palynomorph")
+    axes[1, 1].set_xlabel("Focal Plane Index (Z)")
+    axes[1, 1].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
     fig.suptitle(
         "Distribution of Best Focal Planes Across Annotated Palynomorphs",
@@ -491,20 +515,30 @@ def plot_heatmap(
     row_labels = []
     vol_matrix = []
     ten_matrix = []
+    pvol_matrix = []
+    pten_matrix = []
 
     for key in sorted_keys:
         recs = sorted(roi_by_key[key], key=lambda r: r["z_index"])
         row_labels.append(f"label {recs[0]['label']} ({os.path.basename(key[0])}, #{key[1]})")
         vol_row = [0.0] * n_z
         ten_row = [0.0] * n_z
+        pvol_row = [0.0] * n_z
+        pten_row = [0.0] * n_z
         for rec in recs:
             vol_row[rec["z_index"]] = rec["vol"]
             ten_row[rec["z_index"]] = rec["tenengrad"]
+            pvol_row[rec["z_index"]] = rec["pvol"]
+            pten_row[rec["z_index"]] = rec["ptenengrad"]
         vol_matrix.append(vol_row)
         ten_matrix.append(ten_row)
+        pvol_matrix.append(pvol_row)
+        pten_matrix.append(pten_row)
 
     vol_matrix = np.array(vol_matrix)
     ten_matrix = np.array(ten_matrix)
+    pvol_matrix = np.array(pvol_matrix)
+    pten_matrix = np.array(pten_matrix)
 
     max_rows = 50
     if len(row_labels) > max_rows:
@@ -512,28 +546,28 @@ def plot_heatmap(
         row_labels = [row_labels[i] for i in show_indices]
         vol_matrix = vol_matrix[show_indices]
         ten_matrix = ten_matrix[show_indices]
+        pvol_matrix = pvol_matrix[show_indices]
+        pten_matrix = pten_matrix[show_indices]
 
     n_rows = len(row_labels)
     fig_height = max(5, 0.35 * n_rows + 2)
-    fig, axes = plt.subplots(1, 2, figsize=(14, fig_height))
+    fig, axes = plt.subplots(2, 2, figsize=(18, fig_height))
 
-    im0 = axes[0].imshow(vol_matrix, aspect="auto", cmap="viridis")
-    axes[0].set_title("Variance of Laplacian\nper Palynomorph × Focal Plane")
-    axes[0].set_xlabel("Focal Plane Index (Z)")
-    axes[0].set_ylabel("Annotated Palynomorph")
-    axes[0].set_yticks(range(n_rows))
-    axes[0].set_yticklabels(row_labels, fontsize=7)
-    axes[0].set_xticks(range(n_z))
-    fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04, label="VoL Score")
-
-    im1 = axes[1].imshow(ten_matrix, aspect="auto", cmap="inferno")
-    axes[1].set_title("Tenengrad Gradient\nper Palynomorph × Focal Plane")
-    axes[1].set_xlabel("Focal Plane Index (Z)")
-    axes[1].set_ylabel("Annotated Palynomorph")
-    axes[1].set_yticks(range(n_rows))
-    axes[1].set_yticklabels(row_labels, fontsize=7)
-    axes[1].set_xticks(range(n_z))
-    fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04, label="Tenengrad Score")
+    for ax, matrix, title, label in [
+        (axes[0, 0], vol_matrix, "Variance of Laplacian\nper Palynomorph × Focal Plane", "VoL Score"),
+        (axes[0, 1], ten_matrix, "Tenengrad Gradient\nper Palynomorph × Focal Plane", "Tenengrad Score"),
+        (axes[1, 0], pvol_matrix, "Percentile VoL (p=75)\nper Palynomorph × Focal Plane", "pVoL Score"),
+        (axes[1, 1], pten_matrix, "Percentile Tenengrad (p=75)\nper Palynomorph × Focal Plane", "pTenengrad Score"),
+    ]:
+        cmap = "viridis" if "VoL" in label else "inferno"
+        im = ax.imshow(matrix, aspect="auto", cmap=cmap)
+        ax.set_title(title)
+        ax.set_xlabel("Focal Plane Index (Z)")
+        ax.set_ylabel("Annotated Palynomorph")
+        ax.set_yticks(range(n_rows))
+        ax.set_yticklabels(row_labels, fontsize=7)
+        ax.set_xticks(range(n_z))
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=label)
 
     fig.suptitle(
         "Focus Score Heatmap — All Palynomorphs Across Focal Planes",
@@ -591,7 +625,7 @@ def plot_best_worst_examples(
     if n == 1:
         axes = np.atleast_2d(axes)
 
-    metric_label = "VoL" if metric == "vol" else "Tenengrad"
+    metric_label = {"vol": "VoL", "tenengrad": "Tenengrad", "pvol": "pVoL", "ptenengrad": "pTenengrad"}.get(metric, metric)
 
     for i, info in enumerate(selected):
         tile_path, ann_idx = info["key"]
@@ -654,7 +688,7 @@ def export_csv(
     with open(roi_csv, "w", newline="") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["tile_path", "ann_idx", "label", "z_index", "vol", "tenengrad", "bbox"],
+            fieldnames=["tile_path", "ann_idx", "label", "z_index", "vol", "tenengrad", "pvol", "ptenengrad", "bbox"],
         )
         writer.writeheader()
         writer.writerows(roi_records)
@@ -662,7 +696,7 @@ def export_csv(
 
     ds_csv = os.path.join(output_dir, "focus_scores_dataset_wide.csv")
     with open(ds_csv, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["tile_path", "z_index", "vol", "tenengrad"])
+        writer = csv.DictWriter(f, fieldnames=["tile_path", "z_index", "vol", "tenengrad", "pvol", "ptenengrad"])
         writer.writeheader()
         writer.writerows(ds_records)
     print(f"Saved {ds_csv}")
@@ -723,22 +757,15 @@ def main() -> None:
         plot_mean_focus_per_z_roi(roi_records, n_z, args.output)
         plot_metric_agreement_scatter(roi_records, args.output)
         plot_heatmap(roi_records, n_z, args.output)
-        plot_best_worst_examples(
-            roi_records, args.input, args.output,
-            n_examples=8, metric="vol", mode="spread",
-        )
-        plot_best_worst_examples(
-            roi_records, args.input, args.output,
-            n_examples=8, metric="tenengrad", mode="spread",
-        )
-        plot_best_worst_examples(
-            roi_records, args.input, args.output,
-            n_examples=8, metric="vol", mode="random",
-        )
-        plot_best_worst_examples(
-            roi_records, args.input, args.output,
-            n_examples=8, metric="tenengrad", mode="random",
-        )
+        for metric in ("vol", "tenengrad", "pvol", "ptenengrad"):
+            plot_best_worst_examples(
+                roi_records, args.input, args.output,
+                n_examples=8, metric=metric, mode="spread",
+            )
+            plot_best_worst_examples(
+                roi_records, args.input, args.output,
+                n_examples=8, metric=metric, mode="random",
+            )
     else:
         print("No annotated ROIs; skipping per-ROI plots.")
 
