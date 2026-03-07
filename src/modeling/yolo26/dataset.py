@@ -1,9 +1,21 @@
 """
-H5-backed YOLO dataset for Ultralytics YOLO26 training.
+H5-backed YOLO dataset for Ultralytics YOLO26 training on palynomorph tiles.
 
-Streams the focus-stacked tiles from the .h5 files. Bound boxes are only kept if valid 
-(area >= 16 px^2, aspect ratio). The labels for YOLO are built from the original H5 and
-optionally cached to avoid re-scanning the H5 files on every run.
+This module streams the focus-stacked tiles directly from HDF5 files.
+
+DATASET ASSUMPTIONS:
+    - H5 files contain groups representing tiles (e.g., "tile_0_0", "tile_1_2")
+    - Each tile group has:
+        * focus_stacked: numpy array of shape (H, W, C) with RGB image data
+        * bboxes: numpy array of shape (N, 4) with XYWH pixel coordinates
+        * labels: numpy array of shape (N,) with integer class indices
+    - Bounding boxes are validated (see is_valid_bounding_box function)
+    - Images are converted from RGB to BGR (Ultralytics convention)
+
+YOLO FORMAT:
+    - Labels are stored as normalized center-xywh: (cx, cy, w, h) in [0, 1]
+    - Class indices are 0-based integers
+    - single_cls mode maps all classes to index 0 ("palynomorph")
 """
 
 from __future__ import annotations
@@ -19,96 +31,269 @@ import cv2
 import h5py
 import numpy as np
 
-from src.exploration.h5_utils import list_tile_jobs
 from ultralytics.data.dataset import YOLODataset
 from ultralytics.utils import LOCAL_RANK
 
-# Prefix for H5-backed samples (so load_image can branch)
-H5_PREFIX = "h5::"
+from src.exploration.h5_utils import list_tile_jobs
 
 
-def _valid_box(x: int, y: int, w: int, h: int) -> bool:
-    """A box is valid if it has area >= 16 and no extreme aspect ratio."""
-    if w <= 0 or h <= 0 or w * h < 16:
+H5_PREFIX: str = "h5::"
+
+MINIMUM_BOX_AREA_PX: int = 16
+"""Minimum bounding box area in pixels. Boxes smaller than this are filtered out."""
+
+MINIMUM_ASPECT_RATIO: float = 0.25
+"""Minimum aspect ratio (w/h or h/w). Boxes with extreme ratios are filtered out."""
+
+
+def is_valid_bounding_box(
+    box_width: int,
+    box_height: int,
+) -> bool:
+    """
+    Check if a bounding box meets validity criteria for training.
+
+    Valid if:
+        1. Width and height are both positive
+        2. Area is at least MINIMUM_BOX_AREA_PX (16 pixels)
+        3. Aspect ratio is not extreme (MINIMUM_ASPECT_RATIO and 1/MINIMUM_ASPECT_RATIO)
+
+    Args:
+        box_width: Width of the bounding box in pixels.
+        box_height: Height of the bounding box in pixels.
+
+    Returns:
+        True if box passes all validity checks, False otherwise.
+    """
+    # Check for non-positive dimensions
+    if box_width <= 0 or box_height <= 0:
         return False
-    if h <= 0.25 * w or w <= 0.25 * h:
+
+    # Check minimum area requirement
+    box_area: int = box_width * box_height
+    if box_area < MINIMUM_BOX_AREA_PX:
         return False
+
+    # Check aspect ratio (reject very thin/tall boxes)
+    if box_height < MINIMUM_ASPECT_RATIO * box_width:
+        return False
+    if box_width < MINIMUM_ASPECT_RATIO * box_height:
+        return False
+
     return True
 
 
-def _xywh_pixel_to_normalized(
-    bboxes_xywh: np.ndarray,
-    labels: np.ndarray,
-    height: int,
-    width: int,
-    single_cls: bool = False,
+# Bounding Box Coordinate Conversion
+
+def convert_xywh_pixel_to_normalized_center(
+    bboxes_xywh_pixel: np.ndarray,
+    class_labels: np.ndarray,
+    image_height: int,
+    image_width: int,
+    use_single_class: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Filter and convert XYWH pixel to YOLO normalized (center x,y, w,h). Returns (cls (n,1), bboxes (n,4))."""
-    cls_list, box_list = [], []
-    for (x, y, w, h), lab in zip(bboxes_xywh.tolist(), labels.tolist()):
-        xi, yi, wi, hi = int(x), int(y), int(w), int(h)
-        if not _valid_box(xi, yi, wi, hi):
+    """
+    Convert pixel XYWH bounding boxes to YOLO normalized center-xywh format.
+
+    Filters out invalid boxes and converts from XYWH pixel coordinates to normalized center-xywh.
+
+    Args:
+        bboxes_xywh_pixel: Array of shape (N, 4) with [x, y, width, height] in pixels.
+        class_labels: Array of shape (N,) with integer class indices.
+        image_height: Height of the source image in pixels.
+        image_width: Width of the source image in pixels.
+        use_single_class: If True, all labels are mapped to class 0.
+
+    Returns:
+        Tuple of (class_array, bbox_array):
+            - class_array: Shape (M, 1) with class indices as float32
+            - bbox_array: Shape (M, 4) with normalized [cx, cy, w, h] as float32
+        Where M <= N after filtering invalid boxes.
+    """
+    valid_classes: list[float] = []
+    valid_boxes: list[list[float]] = []
+
+    # Iterate through each bounding box and its corresponding label
+    for bbox_coords, label in zip(bboxes_xywh_pixel.tolist(), class_labels.tolist()):
+        pixel_x, pixel_y, pixel_w, pixel_h = bbox_coords
+
+        int_x, int_y = int(pixel_x), int(pixel_y)
+        int_w, int_h = int(pixel_w), int(pixel_h)
+
+        # Skip boxes that fail validation
+        if not is_valid_bounding_box(int_w, int_h):
             continue
-        cx = (xi + wi / 2.0) / width
-        cy = (yi + hi / 2.0) / height
-        nw = wi / width
-        nh = hi / height
-        box_list.append([cx, cy, nw, nh])
-        cls_list.append(0 if single_cls else (int(lab) if lab >= 0 else 0))
-    cls_arr = np.array(cls_list, dtype=np.float32).reshape(-1, 1) if cls_list else np.zeros((0, 1), dtype=np.float32)
-    box_arr = np.array(box_list, dtype=np.float32) if box_list else np.zeros((0, 4), dtype=np.float32)
-    return cls_arr, box_arr
 
+        # Convert top-left to center coordinates
+        center_x: float = (pixel_x + pixel_w / 2.0) / image_width
+        center_y: float = (pixel_y + pixel_h / 2.0) / image_height
 
-def _cache_path(h5_root: str, split_name: str, stems_hash: str, single_cls: bool = False) -> Path:
-    suffix = "_single" if single_cls else "_multi"
-    return Path(h5_root) / f".yolo_h5_{split_name}_{stems_hash[:12]}{suffix}.cache"
+        # Normalize dimensions by the image size
+        normalized_width: float = pixel_w / image_width
+        normalized_height: float = pixel_h / image_height
 
+        valid_boxes.append([center_x, center_y, normalized_width, normalized_height])
 
-def _build_labels_from_h5(
-    im_files: list[str],
-    data: dict[str, Any],
-    single_cls: bool = False,
-) -> list[dict[str, Any]]:
-    """Build YOLO label dicts from H5 for each entry in im_files (each must be h5::path::group)."""
-    labels_out = []
-    for im_file in im_files:
-        if not im_file.startswith(H5_PREFIX):
-            raise ValueError(f"Expected H5-backed image, got {im_file}")
-        _, h5_path, group_name = im_file.split("::", 2)
-        with h5py.File(h5_path, "r") as f:
-            if group_name not in f or "focus_stacked" not in f[group_name]:
-                continue
-            g = f[group_name]
-            bboxes = np.array(g["bboxes"])
-            labs = np.array(g["labels"])
-            shape = g["focus_stacked"].shape
-            h, w = int(shape[0]), int(shape[1])
-        if bboxes.size == 0 and labs.size == 0:
-            cls_arr = np.zeros((0, 1), dtype=np.float32)
-            bbox_arr = np.zeros((0, 4), dtype=np.float32)
+        # Determine class index
+        if use_single_class:
+            class_index: float = 0.0
         else:
-            cls_arr, bbox_arr = _xywh_pixel_to_normalized(bboxes, labs, h, w, single_cls=single_cls)
-        labels_out.append({
-            "im_file": im_file,
-            "shape": (h, w),
-            "cls": cls_arr,
-            "bboxes": bbox_arr,
-            "segments": [],
-            "keypoints": None,
-            "normalized": True,
-            "bbox_format": "xywh",
-        })
-    return labels_out
+            class_index = float(int(label)) if label >= 0 else 0.0
+
+        valid_classes.append(class_index)
+
+    # Convert lists to numpy arrays with the correct shapes
+    if valid_classes:
+        class_array: np.ndarray = np.array(valid_classes, dtype=np.float32).reshape(-1, 1)
+        bbox_array: np.ndarray = np.array(valid_boxes, dtype=np.float32)
+    else:
+        # Return empty arrays with the correct shapes for YOLO
+        class_array = np.zeros((0, 1), dtype=np.float32)
+        bbox_array = np.zeros((0, 4), dtype=np.float32)
+
+    return class_array, bbox_array
+
+
+def compute_cache_file_path(
+    h5_root_directory: str,
+    split_name: str,
+    stems_hash: str,
+    use_single_class: bool,
+) -> Path:
+    """
+    Compute the path for the label cache file.
+
+    Args:
+        h5_root_directory: The directory containing the H5 files.
+        split_name: The name of the dataset split (train, val, test).
+        stems_hash: Hash of the sorted image stems for this split.
+        use_single_class: Whether to use single-class mode.
+
+    Returns:
+        The path to the cache file.
+    """
+    # Use suffix to distinguish single-class from multi-class caches
+    class_mode_suffix: str = "_single" if use_single_class else "_multi"
+    cache_filename: str = f".yolo_h5_{split_name}_{stems_hash[:12]}{class_mode_suffix}.cache"
+
+    return Path(h5_root_directory) / cache_filename
+
+
+def build_labels_from_h5_files(
+    image_file_identifiers: list[str],
+    data_config: dict[str, Any],
+    use_single_class: bool,
+) -> list[dict[str, Any]]:
+    """
+    Build YOLO-format label dictionaries from the H5 tile files.
+
+    Args:
+        image_file_identifiers: List of H5 identifiers in format 'h5::/path::group'.
+        data_config: The YOLO data configuration dictionary.
+        use_single_class: Whether to use single-class mode.
+
+    Returns:
+        A list of label dictionaries, one per valid tile. Each dictionary contains:
+            - im_file: The original identifier string
+            - shape: The shape of the image (height, width)
+            - cls: The class indices (N, 1)
+            - bboxes: The normalized boxes, shape (N, 4)
+            - segments: An empty list (not used for detection)
+            - keypoints: None (not used for detection)
+            - normalized: True (boxes are in [0,1] range)
+            - bbox_format: "xywh" (center-based format) (Ultralytics convention)
+    """
+    label_records: list[dict[str, Any]] = []
+
+    for image_identifier in image_file_identifiers:
+        # Validate we're dealing with an image from the H5 files
+        if not image_identifier.startswith(H5_PREFIX):
+            raise ValueError(
+                f"Expected H5-backed image identifier starting with '{H5_PREFIX}', "
+                f"got: {image_identifier}"
+            )
+
+        # "h5::/path/to/file.h5::group_name"
+        _, h5_file_path, tile_group_name = image_identifier.split("::", 2)
+
+        # Open H5 file and extract tile data
+        with h5py.File(h5_file_path, "r") as h5_file:
+            # Validate tile group and required datasets exist
+            if tile_group_name not in h5_file:
+                warnings.warn(
+                    f"Tile group '{tile_group_name}' doesn't exist in {h5_file_path}."
+                )
+                continue
+            if "focus_stacked" not in h5_file[tile_group_name]:
+                warnings.warn(
+                    f"Tile group '{tile_group_name}' doesn't have a 'focus_stacked' dataset."
+                )
+                continue
+
+            tile_group = h5_file[tile_group_name]
+
+            # Extract bounding boxes and labels
+            raw_bboxes: np.ndarray = np.array(tile_group["bboxes"])
+            raw_labels: np.ndarray = np.array(tile_group["labels"])
+
+            # Image dimensions from focus_stacked dataset
+            focus_stacked_shape = tile_group["focus_stacked"].shape
+            tile_height: int = int(focus_stacked_shape[0])
+            tile_width: int = int(focus_stacked_shape[1])
+
+        # Handle tiles with no bounding boxes or labels
+        if raw_bboxes.size == 0 and raw_labels.size == 0:
+            class_array = np.zeros((0, 1), dtype=np.float32)
+            bbox_array = np.zeros((0, 4), dtype=np.float32)
+        else:
+            # Convert the bounding boxes to YOLO's expected input format
+            class_array, bbox_array = convert_xywh_pixel_to_normalized_center(
+                bboxes_xywh_pixel=raw_bboxes,
+                class_labels=raw_labels,
+                image_height=tile_height,
+                image_width=tile_width,
+                use_single_class=use_single_class,
+            )
+
+        # Label record conforming to Ultralytics expected format
+        label_record: dict[str, Any] = {
+            "im_file": image_identifier,
+            "shape": (tile_height, tile_width),
+            "cls": class_array,
+            "bboxes": bbox_array,
+            "segments": [],  # Not used in our use case
+            "keypoints": None,  # Not used in our use case
+            "normalized": True,  # Boxes are in [0,1] range
+            "bbox_format": "xywh",  # Center-based xywh format
+        }
+
+        label_records.append(label_record)
+
+    return label_records
 
 
 class H5YOLODataset(YOLODataset):
     """
-    YOLO detection dataset that loads images and labels from H5 tile files.
+    Streams images and labels from H5 tile files.
 
-    Uses focus_stacked (H,W,C) and bboxes/labels per tile. Tiles are selected
-    by split via train_val_test.json (image stems). A label-list cache is optional and
-    keyed by the h5_root + split + stems hash.
+    TExtends Ultralytics YOLODataset to load focus-stacked images
+    directly from HDF5 files, to bypass the standard image file approach (i.e., loading exported images).
+    
+    Tiles are selected by the given split from the `train_val_test.json` file.
+
+    DATA LOADING:
+        - Images come from focus_stacked dataset in each H5 tile group
+        - Images are converted from RGB (H5 storage) to BGR (Ultralytics convention)
+        - Bounding boxes are read from the bboxes and labels datasets
+
+    AUGMENTATION (handled by parent class, YOLODataset):
+        - When augment=True: mosaic, mixup, hsv shifts, flips, scale, translate
+        - When augment=False: only resize and letterbox padding
+        - ANy additional specific augmentation hyperparameters can be passed in via the `hyp` argument
+
+    CACHING:
+        - Label metadata can be cached to avoid re-scanning the H5 files
+        - Cache is keyed by (h5_root, split_name, image_stems_hash, use_single_class)
     """
 
     def __init__(
@@ -117,91 +302,245 @@ class H5YOLODataset(YOLODataset):
         splits_json_path: str,
         split_name: str,
         data: dict[str, Any],
-        cache_labels: bool = True,
+        cache_labels: bool,
+        single_cls: bool,
+        imgsz: int,
+        batch_size: int,
+        augment: bool,
+        hyp: Any,
+        rect: bool,
+        stride: int,
+        pad: float,
+        prefix: str,
+        task: str,
+        classes: list[int] | None,
+        fraction: float,
         img_path: str | None = None,
-        **kwargs: Any,
     ) -> None:
-        self._h5_root = os.path.abspath(h5_root)
-        self._splits_json_path = os.path.abspath(splits_json_path)
-        self._split_name = split_name
-        self._cache_labels = cache_labels
+        """
+        Initialize the H5-backed YOLO dataset.
+
+        Args:
+            h5_root: Directory containing .h5 tile files.
+            splits_json_path: Path to train_val_test.json defining dataset splits.
+            split_name: Which split to load ("train", "val", or "test").
+            data: YOLO data configuration dict with 'names' and 'nc'.
+            cache_labels: Whether to cache the label metadata to disk.
+            single_cls: Whether to map all classes to a single "palynomorph" class.
+            imgsz: Target image size for training/validation.
+            batch_size: Batch size.
+            augment: Whether to enable training augmentations.
+            hyp: Hyperparameter configuration (from Ultralytics args).
+            rect: Whether to enable rectangular training (less padding).
+            stride: Model stride for size calculations.
+            pad: Padding factor for letterboxing.
+            prefix: Logging prefix string (e.g., "train: ", "val: ", "test: ").
+            task: Task type (should be "detect").
+            classes: Optional list of class indices to filter.
+            fraction: Fraction of data to use (1.0 = all tiles).
+            img_path: Override image path (defaults to the H5 root directory).
+        """
+        # Store H5-specific configuration
+        self._h5_root: str = os.path.abspath(h5_root)
+        self._splits_json_path: str = os.path.abspath(splits_json_path)
+        self._split_name: str = split_name
+        self._cache_labels: bool = cache_labels
+        self.single_cls: bool = single_cls
+
+        # Default img_path to the H5 root directory if not specified
         if img_path is None:
             img_path = self._h5_root
-        # Disable image caching; we load from H5 on demand
-        kwargs.setdefault("cache", None)
-        kwargs.pop("task", None)
-        super().__init__(img_path=img_path, data=data, task="detect", **kwargs)
+
+        # Disable built-in image caching; we load from the H5 files on demand
+        # The 'cache' parameter controls Ultralytics RAM/disk image caching
+        super().__init__(
+            img_path=img_path,
+            imgsz=imgsz,
+            batch_size=batch_size,
+            augment=augment,
+            hyp=hyp,
+            rect=rect,
+            cache=None,  # Disable image caching for H5 streaming
+            single_cls=single_cls,
+            stride=stride,
+            pad=pad,
+            prefix=prefix,
+            task=task,
+            classes=classes,
+            data=data,
+            fraction=fraction,
+        )
 
     def get_img_files(self, img_path: str | list[str]) -> list[str]:
-        """Return a list of string identifiers for each tile 
-        (e.g. "h5::/path/to/slide.h5::tile_0_0") built from
-         list_tile_jobs(h5_root) filtered by split (using train_val_test.json).
         """
-        with open(self._splits_json_path) as f:
-            splits = json.load(f)
-        stem_set = set(splits[self._split_name])
-        all_tiles = list_tile_jobs(self._h5_root)
-        tiles = [(p, s, g) for p, s, g in all_tiles if s in stem_set]
-        return [f"{H5_PREFIX}{p}::{g}" for p, s, g in tiles]
+        Build list of H5 tile identifiers for this split.
+
+        Scans h5_root for all tile groups using list_tile_jobs, then filters
+        to only include tiles whose source image stem is in the current split.
+
+        Args:
+            img_path: Path argument (unused, BUT NEEDED for YOLODataset API compatibility).
+
+        Returns:
+            List of identifier strings in the format "h5::/path/to/file.h5::group_name".
+        """
+        # Load split configuration
+        with open(self._splits_json_path, "r", encoding="utf-8") as json_file:
+            splits_data: dict[str, list[str]] = json.load(json_file)
+
+        # Image stems belonging to this split
+        split_image_stems: set[str] = set(splits_data[self._split_name])
+
+        # Discover all tiles across all H5 files in h5_root
+        all_tile_jobs: list[tuple[str, str, str]] = list_tile_jobs(self._h5_root)
+
+        # Filter tiles to only those matching the current split
+        # Each job is a tuple of (h5_path, image_stem, group_name)
+        filtered_tiles: list[tuple[str, str, str]] = [
+            (h5_path, image_stem, group_name)
+            for h5_path, image_stem, group_name in all_tile_jobs
+            if image_stem in split_image_stems
+        ]
+
+        tile_identifiers: list[str] = [
+            f"{H5_PREFIX}{h5_path}::{group_name}"
+            for h5_path, _, group_name in filtered_tiles
+        ]
+
+        return tile_identifiers
 
     def get_labels(self) -> list[dict[str, Any]]:
-        """Build the list-of-dict structure from H5: for each tile, open the H5, read
-         `bboxes` and `labels`, apply the bbox validity rule (area >= 16, aspect ratio not extreme),
-          convert to normalized xywh.  Optionally cache this list to a .cache file 
-          (keyed by `h5_root` + splits hash) to avoid re-opening all H5s on every run.
         """
-        with open(self._splits_json_path) as f:
-            splits = json.load(f)
-        stems_hash = hashlib.sha256(
-            json.dumps(sorted(splits[self._split_name]), sort_keys=True).encode()
-        ).hexdigest()
-        cache_path = _cache_path(self._h5_root, self._split_name, stems_hash, getattr(self, "single_cls", False))
+        Build or load cached label metadata for all tiles in the current split.
 
+        Checks for a valid cache file matching the current configuration.
+        If not found, scans all the H5 files to extract the bounding boxes and labels.
+        and caches the result.
+
+        Returns:
+            List of label dictionaries, one per tile in the current split.
+        """
+        # Load split configuration
+        with open(self._splits_json_path, "r", encoding="utf-8") as json_file:
+            splits_data: dict[str, list[str]] = json.load(json_file)
+
+        # Compute hash of sorted image stems
+        sorted_stems: list[str] = sorted(splits_data[self._split_name])
+        stems_json: str = json.dumps(sorted_stems, sort_keys=True)
+        stems_hash: str = hashlib.sha256(stems_json.encode()).hexdigest()
+
+        cache_path: Path = compute_cache_file_path(
+            h5_root_directory=self._h5_root,
+            split_name=self._split_name,
+            stems_hash=stems_hash,
+            use_single_class=self.single_cls,
+        )
+
+        # Attempt to load from cache (only on the main process for distributed training)
         if self._cache_labels and cache_path.is_file() and LOCAL_RANK in (-1, 0):
             try:
-                with open(cache_path, "rb") as f:
-                    cached = pickle.load(f)
-                if cached.get("hash") == stems_hash and "labels" in cached:
-                    return cached["labels"]
-            except Exception:
+                with open(cache_path, "rb") as cache_file:
+                    cached_data: dict[str, Any] = pickle.load(cache_file)
+
+                # Validate cache hash matches the current configuration
+                if cached_data.get("hash") == stems_hash and "labels" in cached_data:
+                    # Sync the im_files with the cached labels to prevent index mismatches
+                    cached_labels: list[dict[str, Any]] = cached_data["labels"]
+                    self.im_files = [label_dict["im_file"] for label_dict in cached_labels]
+                    return cached_labels
+
+            except (pickle.UnpicklingError, KeyError, EOFError):
+                # Cache is corrupted or incompatible, so we just rebuild the labels
                 pass
 
-        labels = _build_labels_from_h5(
-            self.im_files, self.data, single_cls=getattr(self, "single_cls", False)
+        # Build labels by scanning the H5 files
+        computed_labels: list[dict[str, Any]] = build_labels_from_h5_files(
+            image_file_identifiers=self.im_files,
+            data_config=self.data,
+            use_single_class=self.single_cls,
         )
-        if not labels:
-            raise RuntimeError(
-                f"No valid tiles found for split {self._split_name} in {self._h5_root}. "
-                "Verify that H5 groups have 'focus_stacked', 'bboxes', and 'labels'."
-            )
-        self.im_files = [lb["im_file"] for lb in labels]
 
+        # Validate that we found some tiles in the current split
+        if not computed_labels:
+            raise RuntimeError(
+                f"No valid tiles found for the current split '{self._split_name}' in {self._h5_root}. "
+                "Verify that H5 groups contain 'focus_stacked', 'bboxes', and 'labels' datasets."
+            )
+
+        # Sync the im_files with the computed labels
+        self.im_files = [label_dict["im_file"] for label_dict in computed_labels]
+
+        # Save to cache (only on the main process)
         if self._cache_labels and LOCAL_RANK in (-1, 0):
             try:
-                with open(cache_path, "wb") as f:
-                    pickle.dump({"hash": stems_hash, "labels": labels}, f)
-            except Exception:
+                cache_data: dict[str, Any] = {
+                    "hash": stems_hash,
+                    "labels": computed_labels,
+                }
+                with open(cache_path, "wb") as cache_file:
+                    pickle.dump(cache_data, cache_file)
+            except (OSError, pickle.PicklingError):
+                # Cache write failed but who cares
                 pass
-        return labels
 
-    def load_image(self, i: int, rect_mode: bool = True) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
-        im_file = self.im_files[i]
-        if not im_file.startswith(H5_PREFIX):
-            return super().load_image(i, rect_mode=rect_mode)
+        return computed_labels
 
-        _, h5_path, group_name = im_file.split("::", 2)
+    def load_image(
+        self,
+        index: int,
+        rect_mode: bool = True,
+    ) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
+        """
+        Load a single image from the H5 file by index.
 
-        with h5py.File(h5_path, "r") as f:
-            img = np.array(f[group_name]["focus_stacked"])
+        Reads the focus_stacked dataset from the corresponding H5 tile group
+        and converts from RGB to BGR (Ultralytics convention).
 
-        # Ultralytics expects BGR (OpenCV convention for RGB images)
-        if img.ndim == 3 and img.shape[2] == 3:
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        h, w = img.shape[0], img.shape[1]
+        Args:
+            index: Index into the self.im_files for the image to load.
+            rect_mode: Whether rectangular inference is enabled (unused here,
+                        BUT NEEDED for YOLODataset API compatibility).
 
+        Returns:
+            Tuple of (image, original_shape, current_shape)
+                - image: BGR numpy array of shape (H, W, C)
+                - original_shape: (height, width) of the loaded image
+                - current_shape: (height, width) after any transforms (same as the original shape for our use case)
+        """
+        image_identifier: str = self.im_files[index]
+
+        # This dataset serves only H5-backed tiles; non-H5 identifiers are invalid
+        if not image_identifier.startswith(H5_PREFIX):
+            raise ValueError(
+                f"Expected H5-backed image identifier (prefix '{H5_PREFIX}'), got: {image_identifier}"
+            )
+
+        # Parse H5 identifier
+        _, h5_file_path, tile_group_name = image_identifier.split("::", 2)
+
+        # Load focus-stacked image from the H5 file
+        with h5py.File(h5_file_path, "r") as h5_file:
+            focus_stacked_image: np.ndarray = np.array(
+                h5_file[tile_group_name]["focus_stacked"]
+            )
+
+        # Convert RGB to BGR (Ultralytics convention)
+        # The H5 have images in RGB from the original NDPI/microscopy format
+        if focus_stacked_image.ndim == 3 and focus_stacked_image.shape[2] == 3:
+            bgr_image: np.ndarray = cv2.cvtColor(focus_stacked_image, cv2.COLOR_RGB2BGR)
+        else:
+            bgr_image = focus_stacked_image
+
+        image_height: int = bgr_image.shape[0]
+        image_width: int = bgr_image.shape[1]
+        original_shape: tuple[int, int] = (image_height, image_width)
+
+        # Update the augmentation buffer (used by mosaic/mixup augmentations)
         if self.augment:
-            self.buffer.append(i)
-            if 1 < len(self.buffer) >= self.max_buffer_length:
+            self.buffer.append(index)
+            if len(self.buffer) > 1 and len(self.buffer) >= self.max_buffer_length:
                 self.buffer.pop(0)
 
-        return img, (h, w), (h, w)
+        # Return the image with shape information
+        # Both shapes are the same since no resizing happens in the load_image method
+        return bgr_image, original_shape, original_shape
