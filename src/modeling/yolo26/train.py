@@ -219,10 +219,6 @@ class H5DetectionTrainer(DetectionTrainer):
         """
         Create a dataloader for training or validation.
 
-        Overrides the parent method to check for the H5 configuration in the GLOBAL_ARGS.
-        If the H5 paths are configured, creates an H5-backed dataloader.
-        Otherwise, delegates to the parent implementation.
-
         Args:
             dataset_path: Path to the dataset (unused for H5 mode).
             batch_size: Number of samples per batch.
@@ -240,11 +236,9 @@ class H5DetectionTrainer(DetectionTrainer):
         h5_root: str | None = getattr(GLOBAL_ARGS, "h5_root", None)
         splits_json: str | None = getattr(GLOBAL_ARGS, "splits_json", None)
 
-        # This project uses only H5-backed datasets; h5_root and splits_json are required
         if not h5_root or not splits_json:
             raise ValueError(
                 "H5 training requires --h5_root and --splits_json. "
-                "This project does not support standard YOLO dataset format."
             )
 
         return create_h5_dataloader(
