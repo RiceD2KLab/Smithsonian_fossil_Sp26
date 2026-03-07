@@ -157,17 +157,20 @@ class H5DetectionValidator(DetectionValidator):
         self,
         dataset_path: str,
         batch_size: int,
-        rank: int,
-        mode: str,
+        rank: int = 0,
+        mode: str = "",
     ) -> Any:
         """
         Create dataloader for validation/testing.
 
+        Ultralytics calls this with only (dataset_path, batch_size); rank and mode
+        default so the signature matches the parent API (will error if not provided for some reason).
+
         Args:
             dataset_path: Path to dataset (unused for H5 mode).
             batch_size: Samples per batch.
-            rank: Distributed training rank.
-            mode: Default mode if split not specified in args.
+            rank: Distributed training rank (default 0).
+            mode: Fallback split name if not in args (default "val").
 
         Returns:
             PyTorch DataLoader for evaluation.
