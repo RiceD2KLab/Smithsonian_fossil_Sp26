@@ -1,24 +1,20 @@
 #!/bin/bash
-# NOTS (Rice CRC) SLURM script for YOLO26l training.
-# Full run: commons 24h, batch 16, 6 workers (8 CPUs). For a short test use partition=scavenge, time=01:00:00, epochs=2, batch=4.
-# On NOTS run: module spider CUDA; module spider PyTorch — then set the module load below.
-#SBATCH --job-name=yolo26l
+# NOTS (Rice CRC) SLURM script for YOLO26l training CPU only.
+#SBATCH --job-name=yolo26l-cpu
 #SBATCH --account=commons
 #SBATCH --partition=commons
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --time=02:00:00
 #SBATCH --export=ALL
-#SBATCH --output=slurm-yolo26l-%j.out
-#SBATCH --error=slurm-yolo26l-%j.err
+#SBATCH --output=slurm-yolo26l-cpu-%j.out
+#SBATCH --error=slurm-yolo26l-cpu-%j.err
 
 module purge
 module load foss/2023a PyTorch/2.1.2-CUDA-12.1.1
 
-# Persistent venv: install from requirements.txt on first use, reuse on later jobs
 REPO_DIR="$SLURM_SUBMIT_DIR"
 VENV_DIR="${SHARED_SCRATCH:-$HOME}/$USER/smithsonian_venv"
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -51,27 +47,30 @@ start_time=$(date +%s)
 cp -r -T "$DATA_SRC_DIR" "$JOB_DATA_DIR"
 echo "Data copy finished in $(($(date +%s) - start_time))s"
 
-SPLITS_JSON="$JOB_DATA_DIR/train_val_test.json"
+# If train_val_test.json is in processed root instead of tiles/, use: "$JOB_DATA_DIR/train_val_test.json"
+SPLITS_JSON="$JOB_DATA_DIR/tiles/train_val_test.json"
 
 cd "$SLURM_SUBMIT_DIR"
 
-# Avoid torchvision CUDA NMS backend error on NOTS (use Ultralytics TorchNMS instead)
+# Avoid torchvision NMS backend issues on NOTS (use Ultralytics TorchNMS instead)
 export ULTRALYTICS_FORCE_TORCH_NMS=1
 
 python -m src.modeling.yolo26.run_train_nots \
   --model yolo26l.pt \
   --h5_root "$JOB_DATA_DIR/tiles" \
   --splits_json "$SPLITS_JSON" \
-  --epochs 100 \
+  --epochs 2 \
   --imgsz 1024 \
-  --batch 16 \
-  --workers 6 \
+  --batch 4 \
+  --workers 4 \
   --project "$JOB_OUTPUT_DIR" \
-  --name yolo26l \
+  --name yolo26l_test_cpu \
+  --device cpu \
   --cache_labels \
   --single_cls
 
-SAVE_DIR="${SHARED_SCRATCH:-$HOME}/$USER/yolo26l_$SLURM_JOB_ID"
+# Save results to persistent storage so they survive node release
+SAVE_DIR="${SHARED_SCRATCH:-$HOME}/$USER/yolo26l_cpu_$SLURM_JOB_ID"
 mkdir -p "$(dirname "$SAVE_DIR")"
 cp -r "$JOB_OUTPUT_DIR" "$SAVE_DIR"
 echo "Results copied to $SAVE_DIR"
