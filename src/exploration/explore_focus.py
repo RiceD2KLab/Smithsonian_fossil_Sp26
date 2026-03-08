@@ -43,8 +43,10 @@ plt.rcParams.update({
     "savefig.bbox": "tight",
 })
 
-COLOR_VOL = "#2C73D2"
-COLOR_TEN = "#E85D04"
+COLOR_VOL     = "#0077BB"  # bright blue
+COLOR_TEN     = "#EE3377"  # vivid magenta-pink
+COLOR_PVOL    = "#009944"  # green
+COLOR_PTEN    = "#FF8C00"  # orange
 
 # H5 data loading
 
@@ -339,14 +341,14 @@ def plot_best_z_histogram(
     axes[0, 1].set_xlabel("Focal Plane Index (Z)")
     axes[0, 1].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
-    axes[1, 0].hist(best_pvol, bins=z_bins, color=COLOR_VOL, edgecolor="white", linewidth=0.8, alpha=0.85)
+    axes[1, 0].hist(best_pvol, bins=z_bins, color=COLOR_PVOL, edgecolor="white", linewidth=0.8, alpha=0.85)
     axes[1, 0].set_title("Percentile VoL (p=75)\nBest Focal Plane per Palynomorph")
     axes[1, 0].set_xlabel("Focal Plane Index (Z)")
     axes[1, 0].set_ylabel("Number of Palynomorphs")
     axes[1, 0].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
     axes[1, 0].yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
-    axes[1, 1].hist(best_pten, bins=z_bins, color=COLOR_TEN, edgecolor="white", linewidth=0.8, alpha=0.85)
+    axes[1, 1].hist(best_pten, bins=z_bins, color=COLOR_PTEN, edgecolor="white", linewidth=0.8, alpha=0.85)
     axes[1, 1].set_title("Percentile Tenengrad (p=75)\nBest Focal Plane per Palynomorph")
     axes[1, 1].set_xlabel("Focal Plane Index (Z)")
     axes[1, 1].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
@@ -370,33 +372,35 @@ def plot_mean_focus_per_z_roi(
     """Line plot: mean ± std focus score per Z across all ROIs."""
     z_vol: dict[int, list[float]] = defaultdict(list)
     z_ten: dict[int, list[float]] = defaultdict(list)
+    z_pvol: dict[int, list[float]] = defaultdict(list)
+    z_pten: dict[int, list[float]] = defaultdict(list)
     for rec in roi_records:
         z_vol[rec["z_index"]].append(rec["vol"])
         z_ten[rec["z_index"]].append(rec["tenengrad"])
+        z_pvol[rec["z_index"]].append(rec["pvol"])
+        z_pten[rec["z_index"]].append(rec["ptenengrad"])
 
     zs = sorted(z_vol.keys())
-    vol_mean = [np.mean(z_vol[z]) for z in zs]
-    vol_std = [np.std(z_vol[z]) for z in zs]
-    ten_mean = [np.mean(z_ten[z]) for z in zs]
-    ten_std = [np.std(z_ten[z]) for z in zs]
+    vol_mean  = [np.mean(z_vol[z])  for z in zs]
+    vol_std   = [np.std(z_vol[z])   for z in zs]
+    ten_mean  = [np.mean(z_ten[z])  for z in zs]
+    ten_std   = [np.std(z_ten[z])   for z in zs]
+    pvol_mean = [np.mean(z_pvol[z]) for z in zs]
+    pvol_std  = [np.std(z_pvol[z])  for z in zs]
+    pten_mean = [np.mean(z_pten[z]) for z in zs]
+    pten_std  = [np.std(z_pten[z])  for z in zs]
 
     fig, ax1 = plt.subplots(figsize=(9, 5))
-    ax1.errorbar(
-        zs, vol_mean, yerr=vol_std, fmt="o-", color=COLOR_VOL,
-        capsize=4, label="Variance of Laplacian", linewidth=1.8, markersize=6,
-    )
+    ax1.errorbar(zs, vol_mean,  yerr=vol_std,  fmt="o-", color=COLOR_VOL,  capsize=4, label="Variance of Laplacian",      linewidth=1.8, markersize=6)
+    ax1.errorbar(zs, pvol_mean, yerr=pvol_std, fmt="^-", color=COLOR_PVOL, capsize=4, label="Percentile VoL (p=75)",      linewidth=1.8, markersize=6)
     ax1.set_xlabel("Focal Plane Index (Z)")
-    ax1.set_ylabel("VoL Score", color=COLOR_VOL)
-    ax1.tick_params(axis="y", labelcolor=COLOR_VOL)
+    ax1.set_ylabel("VoL Score")
     ax1.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
     ax2 = ax1.twinx()
-    ax2.errorbar(
-        zs, ten_mean, yerr=ten_std, fmt="s--", color=COLOR_TEN,
-        capsize=4, label="Tenengrad", linewidth=1.8, markersize=6,
-    )
-    ax2.set_ylabel("Tenengrad Score", color=COLOR_TEN)
-    ax2.tick_params(axis="y", labelcolor=COLOR_TEN)
+    ax2.errorbar(zs, ten_mean,  yerr=ten_std,  fmt="s-", color=COLOR_TEN,  capsize=4, label="Tenengrad",                  linewidth=1.8, markersize=6)
+    ax2.errorbar(zs, pten_mean, yerr=pten_std, fmt="D-", color=COLOR_PTEN, capsize=4, label="Percentile Tenengrad (p=75)", linewidth=1.8, markersize=6)
+    ax2.set_ylabel("Tenengrad Score")
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
@@ -420,25 +424,31 @@ def plot_dataset_wide_focus(
     """Line plot: mean focus score per Z across all tiles."""
     z_vol: dict[int, list[float]] = defaultdict(list)
     z_ten: dict[int, list[float]] = defaultdict(list)
+    z_pvol: dict[int, list[float]] = defaultdict(list)
+    z_pten: dict[int, list[float]] = defaultdict(list)
     for rec in ds_records:
         z_vol[rec["z_index"]].append(rec["vol"])
         z_ten[rec["z_index"]].append(rec["tenengrad"])
+        z_pvol[rec["z_index"]].append(rec["pvol"])
+        z_pten[rec["z_index"]].append(rec["ptenengrad"])
 
     zs = sorted(z_vol.keys())
-    vol_mean = [np.mean(z_vol[z]) for z in zs]
-    ten_mean = [np.mean(z_ten[z]) for z in zs]
+    vol_mean  = [np.mean(z_vol[z])  for z in zs]
+    ten_mean  = [np.mean(z_ten[z])  for z in zs]
+    pvol_mean = [np.mean(z_pvol[z]) for z in zs]
+    pten_mean = [np.mean(z_pten[z]) for z in zs]
 
     fig, ax1 = plt.subplots(figsize=(9, 5))
-    ax1.plot(zs, vol_mean, "o-", color=COLOR_VOL, label="Variance of Laplacian", linewidth=2, markersize=7)
+    ax1.plot(zs, vol_mean,  "o-", color=COLOR_VOL,  label="Variance of Laplacian",      linewidth=2, markersize=7)
+    ax1.plot(zs, pvol_mean, "^-", color=COLOR_PVOL, label="Percentile VoL (p=75)",      linewidth=2, markersize=7)
     ax1.set_xlabel("Focal Plane Index (Z)")
-    ax1.set_ylabel("VoL Score", color=COLOR_VOL)
-    ax1.tick_params(axis="y", labelcolor=COLOR_VOL)
+    ax1.set_ylabel("VoL Score")
     ax1.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
     ax2 = ax1.twinx()
-    ax2.plot(zs, ten_mean, "s--", color=COLOR_TEN, label="Tenengrad", linewidth=2, markersize=7)
-    ax2.set_ylabel("Tenengrad Score", color=COLOR_TEN)
-    ax2.tick_params(axis="y", labelcolor=COLOR_TEN)
+    ax2.plot(zs, ten_mean,  "s-", color=COLOR_TEN,  label="Tenengrad",                  linewidth=2, markersize=7)
+    ax2.plot(zs, pten_mean, "D-", color=COLOR_PTEN, label="Percentile Tenengrad (p=75)", linewidth=2, markersize=7)
+    ax2.set_ylabel("Tenengrad Score")
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
