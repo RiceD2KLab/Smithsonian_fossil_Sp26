@@ -43,10 +43,10 @@ plt.rcParams.update({
     "savefig.bbox": "tight",
 })
 
-COLOR_VOL     = "#0077BB"  # bright blue
-COLOR_TEN     = "#EE3377"  # vivid magenta-pink
-COLOR_PVOL    = "#009944"  # green
-COLOR_PTEN    = "#FF8C00"  # orange
+COLOR_VOL     = "#0077BB"
+COLOR_TEN     = "#EE3377"
+COLOR_PVOL    = "#009944"
+COLOR_PTEN    = "#FF8C00"
 
 # H5 data loading
 
@@ -95,6 +95,90 @@ def load_single_tile_data(input_path: str, tile_path: str) -> np.ndarray | None:
         if group_name not in h5f:
             return None
         return np.array(h5f[group_name]["data"])
+
+
+def load_single_tile_data_with_stack(input_path: str, tile_path: str) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """
+    Load tile data and focus_stacked image for a given tile_path.
+    Returns (data (H, W, C, Z), focus_stacked (H, W, C)) or (None, None).
+    """
+    parts = tile_path.split("/", 1)
+    if len(parts) != 2:
+        return None, None
+    image_stem, group_name = parts
+    h5_path = input_path if input_path.endswith(".h5") else os.path.join(input_path, f"{image_stem}.h5")
+    if not os.path.isfile(h5_path):
+        return None, None
+    with h5py.File(h5_path, "r") as h5f:
+        if group_name not in h5f:
+            return None, None
+        group = h5f[group_name]
+        data = np.array(group["data"])
+        focus_stacked = np.array(group["focus_stacked"])
+        return data, focus_stacked
+
+def plot_tile_metric_comparison(
+    ds_records: list[dict[str, Any]],
+    input_path: str,
+    output_dir: str,
+    n_examples: int = 4,
+    mode: str = "random",
+) -> None:
+    """
+    For a selection of tiles, show the best Z chosen by each metric side by side,
+    plus the pre-computed focus-stacked image.
+    """
+    import random
+
+    by_tile: dict[str, list[dict]] = defaultdict(list)
+    for rec in ds_records:
+        by_tile[rec["tile_path"]].append(rec)
+
+    tile_paths = list(by_tile.keys())
+    if mode == "random":
+        random.seed(449)
+        selected_paths = random.sample(tile_paths, min(n_examples, len(tile_paths)))
+    else:
+        selected_paths = tile_paths[:n_examples]
+
+    metrics = [
+        ("vol",        "VoL",        COLOR_VOL),
+        ("tenengrad",  "Tenengrad",  COLOR_TEN),
+        ("pvol",       "pVoL",       COLOR_PVOL),
+        ("ptenengrad", "pTenengrad", COLOR_PTEN),
+    ]
+
+    n = len(selected_paths)
+    fig, axes = plt.subplots(n, 5, figsize=(20, 4 * n))
+    if n == 1:
+        axes = np.atleast_2d(axes)
+
+    for i, tile_path in enumerate(selected_paths):
+        recs = by_tile[tile_path]
+        tile_data, focus_stacked = load_single_tile_data_with_stack(input_path, tile_path)
+        if tile_data is None:
+            continue
+
+        for j, (metric, label, color) in enumerate(metrics):
+            best_z = max(recs, key=lambda r: r[metric])["z_index"]
+            score  = max(recs, key=lambda r: r[metric])[metric]
+            axes[i, j].imshow(tile_data[:, :, :, best_z])
+            axes[i, j].set_title(f"{label}\nZ={best_z}  ({score:.0f})", fontsize=9, color=color)
+            axes[i, j].set_xticks([])
+            axes[i, j].set_yticks([])
+
+        axes[i, 4].imshow(focus_stacked)
+        axes[i, 4].set_title("Focus Stack", fontsize=9, color="black")
+        axes[i, 4].set_xticks([])
+        axes[i, 4].set_yticks([])
+        axes[i, 0].set_ylabel(os.path.basename(tile_path), fontsize=7, rotation=0, labelpad=60, va="center")
+
+    fig.suptitle("Best Focal Plane per Metric vs Focus Stack — Full Tile", fontsize=13, fontweight="bold", y=1.02)
+    fig.tight_layout()
+    path = os.path.join(output_dir, "08_tile_metric_comparison.png")
+    fig.savefig(path)
+    plt.close(fig)
+    print(f"Saved {path}")
 
 
 # Focus scoring
@@ -781,6 +865,7 @@ def main() -> None:
 
     if ds_records:
         plot_dataset_wide_focus(ds_records, n_z, args.output)
+        plot_tile_metric_comparison(ds_records, args.input, args.output, n_examples=10, mode="random")
     else:
         print("No tiles; skipping dataset-wide plot.")
 
