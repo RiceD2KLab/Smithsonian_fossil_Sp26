@@ -1,7 +1,7 @@
 #!/bin/bash
-# NOTS (Rice CRC) SLURM script for YOLO26l training.
-# Full run: commons 24h, batch 16, 6 workers (8 CPUs). For a short test use partition=scavenge, time=01:00:00, epochs=2, batch=4.
-# On NOTS run: module spider CUDA; module spider PyTorch — then set the module load below.
+# NOTS (Rice CRC) SLURM script for YOLOv8l-style training on H5 tiles.
+# Full run: commons 24h, batch 16, 4 workers (8 CPUs).
+# For a short test, override partition/time/epochs/batch on the command line as needed.
 #SBATCH --job-name=yolo26l
 #SBATCH --account=commons
 #SBATCH --partition=commons
@@ -16,11 +16,18 @@
 #SBATCH --error=slurm-yolo26l-%j.err
 
 module purge
-module load foss/2023a PyTorch/2.1.2-CUDA-12.1.1
 
-# Persistent venv: install from requirements.txt on first use, reuse on later jobs
 REPO_DIR="$SLURM_SUBMIT_DIR"
-VENV_DIR="${SHARED_SCRATCH:-$HOME}/$USER/smithsonian_venv"
+SCRATCH_ROOT="${SHARED_SCRATCH}/$USER"
+VENV_DIR="${SCRATCH_ROOT}/smithsonian_venv"
+JOB_OUTPUT_DIR="$SCRATCH_ROOT/yolo26/outputs"
+SPLITS_JSON="$SCRATCH_ROOT/processed/train_val_test.json"
+
+unset PYTHONHOME
+unset PYTHONPATH
+
+export PYTHONNOUSERSITE=1
+
 if [[ ! -d "$VENV_DIR" ]]; then
   echo "Creating venv at $VENV_DIR and installing requirements..."
   python -m venv "$VENV_DIR"
@@ -31,47 +38,25 @@ else
   source "$VENV_DIR/bin/activate"
 fi
 
-# Directories (local scratch for fast I/O)
-JOB_ROOT_DIR="$LOCAL_SCRATCH/$USER"
-JOB_DATA_DIR="$JOB_ROOT_DIR/data"
-JOB_OUTPUT_DIR="$JOB_ROOT_DIR/outputs"
-
-export JOB_ROOT_DIR
-export JOB_DATA_DIR
-export JOB_OUTPUT_DIR
-
-mkdir -p "$JOB_ROOT_DIR"
-mkdir -p "$JOB_DATA_DIR"
-mkdir -p "$JOB_OUTPUT_DIR"
-
-# Copy training data from allocation
-DATA_SRC_DIR="/rhf/allocations/dsci435/smithsonian_full_sp26/processed"
-echo "Copying data from $DATA_SRC_DIR ..."
-start_time=$(date +%s)
-cp -r -T "$DATA_SRC_DIR" "$JOB_DATA_DIR"
-echo "Data copy finished in $(($(date +%s) - start_time))s"
-
-SPLITS_JSON="$JOB_DATA_DIR/train_val_test.json"
+# Restrict PYTHONPATH to this repo
+export PYTHONPATH="$REPO_DIR:${PYTHONPATH:-}"
 
 cd "$SLURM_SUBMIT_DIR"
 
-# Avoid torchvision CUDA NMS backend error on NOTS (use Ultralytics TorchNMS instead)
-export ULTRALYTICS_FORCE_TORCH_NMS=1
-
 python -m src.modeling.yolo26.run_train_nots \
   --model yolo26l.pt \
-  --h5_root "$JOB_DATA_DIR/tiles" \
+  --h5_root "$SCRATCH_ROOT/processed/tiles" \
   --splits_json "$SPLITS_JSON" \
-  --epochs 100 \
+  --epochs 200 \
   --imgsz 1024 \
   --batch 16 \
-  --workers 6 \
+  --workers 4 \
   --project "$JOB_OUTPUT_DIR" \
-  --name yolo26l \
+  --name yolo26l_palynomorphs \
   --cache_labels \
   --single_cls
 
-SAVE_DIR="${SHARED_SCRATCH:-$HOME}/$USER/yolo26l_$SLURM_JOB_ID"
-mkdir -p "$(dirname "$SAVE_DIR")"
+SAVE_DIR="$HOME/yolo26/outputs"
+mkdir -p "$SAVE_DIR"
 cp -r "$JOB_OUTPUT_DIR" "$SAVE_DIR"
 echo "Results copied to $SAVE_DIR"
