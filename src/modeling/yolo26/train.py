@@ -63,11 +63,6 @@ from src.modeling.yolo26.dataset import H5YOLODataset
 from src.modeling.yolo26.utils import prepare_h5_yaml
 
 
-# Global arguments for access by the H5DetectionTrainer
-# We need this because Ultralytics trainer instantiation doesn't pass custom arguments
-GLOBAL_ARGS: argparse.Namespace | None = None
-
-
 # Dataloader Configuration Helpers
 
 def compute_model_stride(trainer: DetectionTrainer) -> int:
@@ -232,14 +227,21 @@ class H5DetectionTrainer(DetectionTrainer):
         valid_modes: set[str] = {"train", "val"}
         assert mode in valid_modes, f"Mode must be one of {valid_modes}, not '{mode}'."
 
-        global GLOBAL_ARGS
-        h5_root: str | None = getattr(GLOBAL_ARGS, "h5_root", None)
-        splits_json: str | None = getattr(GLOBAL_ARGS, "splits_json", None)
+        # Read H5 configuration from environment variables.
+        # Needed so it's set in the main process before launching training 
+        # so that it's visible to all DDP worker processes.
+        h5_root: str | None = os.environ.get("H5_ROOT")
+        splits_json: str | None = os.environ.get("SPLITS_JSON")
 
         if not h5_root or not splits_json:
             raise ValueError(
                 "H5 training requires --h5_root and --splits_json. "
             )
+
+        # Cache and single-class flags: prefer environment overrides if present,
+        # otherwise fall back to YOLO args defaults. ()
+        cache_labels_env: str | None = os.environ.get("H5_CACHE_LABELS")
+        single_cls_env: str | None = os.environ.get("H5_SINGLE_CLS")
 
         return create_h5_dataloader(
             trainer=self,
@@ -248,8 +250,8 @@ class H5DetectionTrainer(DetectionTrainer):
             mode=mode,
             batch_size=batch_size,
             rank=rank,
-            cache_labels=getattr(GLOBAL_ARGS, "cache_labels", True),
-            single_cls=getattr(GLOBAL_ARGS, "single_cls", False),
+            cache_labels=cache_labels,
+            single_cls=single_cls,
         )
 
 
@@ -453,6 +455,12 @@ def train_with_h5_dataset(model: YOLO, args: argparse.Namespace) -> None:
     # Validate that the paths exist
     validate_h5_paths(args.h5_root, args.splits_json)
 
+    # Makes H5 configuration available to all DDP worker processes.
+    os.environ["H5_ROOT"] = args.h5_root
+    os.environ["SPLITS_JSON"] = args.splits_json
+    os.environ["H5_CACHE_LABELS"] = "1" if args.cache_labels else "0"
+    os.environ["H5_SINGLE_CLS"] = "1" if args.single_cls else "0"
+
     # Generate the YAML configuration pointing to the H5 data
     yaml_path: str = prepare_h5_yaml(
         h5_root=args.h5_root,
@@ -484,10 +492,6 @@ def main() -> None:
     """
     # Parse command-line arguments
     args: argparse.Namespace = parse_training_arguments()
-
-    # Store args globally for access by H5DetectionTrainer
-    global GLOBAL_ARGS
-    GLOBAL_ARGS = args
 
     # Load YOLO model from weights or variant name
     model: YOLO = YOLO(args.model)
