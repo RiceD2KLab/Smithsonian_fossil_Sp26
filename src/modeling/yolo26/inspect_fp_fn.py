@@ -123,39 +123,64 @@ def is_valid_bounding_box(box_width: float, box_height: float) -> bool:
     return True
 
 
-def load_image_and_labels_from_h5(h5_path: str, tile_key: str) -> tuple[np.ndarray, np.ndarray]:
+def _rgb_hwc_to_bgr(img: np.ndarray) -> np.ndarray:
+    """Normalise an RGB array to (H, W, 3) uint8 BGR for OpenCV."""
+    if img.ndim == 3 and img.shape[0] in (1, 3):
+        img = np.transpose(img, (1, 2, 0))  # CHW → HWC
+    if img.dtype != np.uint8:
+        img = (img * 255).clip(0, 255).astype(np.uint8)
+    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+
+def load_image_and_labels_from_h5(
+    h5_path: str, tile_key: str
+) -> tuple[np.ndarray, np.ndarray, dict]:
     """
-    Load a single tile's image and raw labels from an H5 file.
+    Load a single tile's images and raw labels from an H5 file.
+
+    Returns both the precomputed focus-stacked image and the single sharpest
+    focal plane (determined by ``focal_plane_ranking[0]``) so callers can
+    annotate and save both outputs.
+
+    Args:
+        h5_path:  Absolute path to the ``.h5`` file.
+        tile_key: H5 group key for the tile, e.g. ``"tile_3_7"``.
 
     Returns:
-        img_bgr: (H, W, 3) uint8 BGR numpy array
-        labels:  dict with:
-            - "bboxes": (N, 4) float array — x, y, w, h in pixels
-            - "labels": (N,) int array — class indices
+        img_stacked_bgr:    (H, W, 3) uint8 BGR — precomputed focus-stacked image.
+        img_best_plane_bgr: (H, W, 3) uint8 BGR — sharpest focal plane from ``data``
+                            via ``focal_plane_ranking[0]``.
+        labels:             dict with:
+                                "bboxes": (N, 4) float array — x, y, w, h in pixels
+                                "labels": (N,) int array — class indices
     """
     with h5py.File(h5_path, "r") as f:
         group = f[tile_key]
 
-        # Match the training dataset convention: "focus_stacked", "bboxes", "labels"
+        # Focus-stacked image
         if "focus_stacked" not in group:
             raise KeyError(f"Tile group '{tile_key}' in {h5_path} has no 'focus_stacked' dataset")
-        img = group["focus_stacked"][:]  # (H, W, C) RGB
-        if img.ndim == 3 and img.shape[0] in (1, 3):
-            img = np.transpose(img, (1, 2, 0))  # CHW → HWC
-        if img.dtype != np.uint8:
-            img = (img * 255).clip(0, 255).astype(np.uint8)
-        img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        img_stacked_bgr = _rgb_hwc_to_bgr(group["focus_stacked"][:])
+
+        # Best focal plane via precomputed ranking
+        if "focal_plane_ranking" not in group or "data" not in group:
+            raise KeyError(
+                f"Tile group '{tile_key}' in {h5_path} is missing "
+                "'focal_plane_ranking' or 'data' dataset"
+            )
+        best_z = int(np.array(group["focal_plane_ranking"])[0])
+        img_best_plane_bgr = _rgb_hwc_to_bgr(np.array(group["data"])[:, :, :, best_z])
 
         bboxes = np.array(group["bboxes"], dtype=np.float32) if "bboxes" in group else np.zeros((0, 4), dtype=np.float32)
         cls = np.array(group["labels"], dtype=np.int64) if "labels" in group else np.zeros((0,), dtype=np.int64)
-        
+
         # Filter matching H5YOLODataset logic
         valid_indices = []
         for i, (bbox, c) in enumerate(zip(bboxes, cls)):
             # bbox is [x, y, w, h]
             if is_valid_bounding_box(bbox[2], bbox[3]):
                 valid_indices.append(i)
-                
+
         if valid_indices:
             bboxes = bboxes[valid_indices]
             cls = cls[valid_indices]
@@ -165,7 +190,7 @@ def load_image_and_labels_from_h5(h5_path: str, tile_key: str) -> tuple[np.ndarr
 
         labels = {"bboxes": bboxes, "labels": cls}
 
-    return img_bgr, labels
+    return img_stacked_bgr, img_best_plane_bgr, labels
 
 
 def visualise(args: argparse.Namespace) -> None:
@@ -246,12 +271,12 @@ def visualise(args: argparse.Namespace) -> None:
         h5_path = str(Path(args.h5_root) / h5_name)
 
         try:
-            img_bgr, labels = load_image_and_labels_from_h5(h5_path, tile_key)
+            img_stacked_bgr, img_best_plane_bgr, labels = load_image_and_labels_from_h5(h5_path, tile_key)
         except Exception as e:
             print(f"Warning: could not load {h5_path}::{tile_key}: {e}")
             continue
 
-        h, w = img_bgr.shape[:2]
+        h, w = img_stacked_bgr.shape[:2]
 
         bboxes_px: np.ndarray = labels["bboxes"]
         cls_ids: np.ndarray = labels["labels"]
@@ -318,22 +343,30 @@ def visualise(args: argparse.Namespace) -> None:
         unique_prefix = f"{idx:06d}_{image_id}_{safe_tile}"
 
         if has_fp and fp_saved < args.max_images:
-            ann = Annotator(img_bgr.copy(), line_width=2, font_size=10)
-            for pi in np.where(fp_mask)[0]:
-                box = pred_boxes[pi].tolist()
-                conf = float(pred_conf[pi])
-                cls = int(pred_cls[pi])
-                ann.box_label(box, f"FP cls{cls} {conf:.2f}", color=(0, 0, 220))
-            cv2.imwrite(str(fp_dir / f"{unique_prefix}_fp{int(fp_mask.sum())}.jpg"), ann.result())
+            for img_bgr, suffix in ((img_stacked_bgr, "stacked"), (img_best_plane_bgr, "best_plane")):
+                ann = Annotator(img_bgr.copy(), line_width=2, font_size=10)
+                for pi in np.where(fp_mask)[0]:
+                    box = pred_boxes[pi].tolist()
+                    conf = float(pred_conf[pi])
+                    cls = int(pred_cls[pi])
+                    ann.box_label(box, f"FP cls{cls} {conf:.2f}", color=(0, 0, 220))
+                cv2.imwrite(
+                    str(fp_dir / f"{unique_prefix}_fp{int(fp_mask.sum())}_{suffix}.jpg"),
+                    ann.result(),
+                )
             fp_saved += 1
 
         if has_fn and fn_saved < args.max_images:
-            ann = Annotator(img_bgr.copy(), line_width=2, font_size=10)
-            for gi in np.where(fn_mask)[0]:
-                box = gt_boxes[gi].tolist()
-                cls = int(gt_cls[gi])
-                ann.box_label(box, f"FN cls{cls}", color=(0, 140, 255))
-            cv2.imwrite(str(fn_dir / f"{unique_prefix}_fn{int(fn_mask.sum())}.jpg"), ann.result())
+            for img_bgr, suffix in ((img_stacked_bgr, "stacked"), (img_best_plane_bgr, "best_plane")):
+                ann = Annotator(img_bgr.copy(), line_width=2, font_size=10)
+                for gi in np.where(fn_mask)[0]:
+                    box = gt_boxes[gi].tolist()
+                    cls = int(gt_cls[gi])
+                    ann.box_label(box, f"FN cls{cls}", color=(0, 140, 255))
+                cv2.imwrite(
+                    str(fn_dir / f"{unique_prefix}_fn{int(fn_mask.sum())}_{suffix}.jpg"),
+                    ann.result(),
+                )
             fn_saved += 1
 
     print("==== FP/FN summary (tile-level) ====")
