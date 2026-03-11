@@ -15,7 +15,10 @@ COMMAND (typical usage):
         --project runs/detect \\
         --name yolo26 \\
         --cache_labels \\
-        --single_cls
+        --single_cls \\
+        --optimizer adamw \\
+        --lr0 0.001 \\
+        --lrf 0.001
 
 YOLO26/ULTRALYTICS ASSUMPTIONS:
     Loss Function:
@@ -33,7 +36,7 @@ YOLO26/ULTRALYTICS ASSUMPTIONS:
         - Copy-paste: disabled by default
 
     Optimizer:
-        - SGD with momentum=0.937 (default)
+        - AdamW with default parameters (default)
         - Initial LR=0.01, final LR=0.01 (cosine annealing)
         - Weight decay=0.0005
         - Warmup: 3 epochs with bias_lr=0.1, momentum=0.8
@@ -250,8 +253,8 @@ class H5DetectionTrainer(DetectionTrainer):
             mode=mode,
             batch_size=batch_size,
             rank=rank,
-            cache_labels=cache_labels,
-            single_cls=single_cls,
+            cache_labels=cache_labels_env,
+            single_cls=single_cls_env,
         )
 
 
@@ -336,6 +339,27 @@ Example:
         help="Device to train on (e.g., '0', '0,1', 'cpu'). Auto-detected if not set.",
     )
     parser.add_argument(
+        "--optimizer",
+        type=str,
+        required=False,
+        default="adamw",
+        help="Optimizer to use (e.g., 'adam', 'adamw', 'sgd'). Default is 'adamw'.",
+    )
+    parser.add_argument(
+        "--lr0",
+        type=float,
+        required=False,
+        default=0.001,
+        help="Initial learning rate.",
+    )
+    parser.add_argument(
+        "--lrf",
+        type=float,
+        required=False,
+        default=0.001,
+        help="Final learning rate factor.",
+    )
+    parser.add_argument(
         "--project",
         type=str,
         required=True,
@@ -411,6 +435,9 @@ def build_training_overrides(
     project: str,
     name: str,
     device: str | None,
+    optimizer: str,
+    lr0: float,
+    lrf: float,
 ) -> dict[str, Any]:
     """
     Build the overrides dictionary for YOLO training (H5 dataset only).
@@ -436,6 +463,9 @@ def build_training_overrides(
         "workers": workers,
         "project": project,
         "name": name,
+        "optimizer": optimizer,
+        "lr0": lr0,
+        "lrf": lrf,
     }
 
     if device is not None:
@@ -478,6 +508,9 @@ def train_with_h5_dataset(model: YOLO, args: argparse.Namespace) -> None:
         project=args.project,
         name=args.name,
         device=args.device,
+        optimizer=args.optimizer,
+        lr0=args.lr0,
+        lrf=args.lrf,
     )
 
     model.train(**overrides, trainer=H5DetectionTrainer)

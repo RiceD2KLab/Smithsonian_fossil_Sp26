@@ -55,6 +55,9 @@ python -m src.modeling.yolo26.run_train_nots \
   --name yolo26l_palynomorphs \
   --cache_labels \
   --single_cls
+  --optimizer adamw \
+  --lr0 0.001 \
+  --lrf 0.001
 
 SAVE_DIR="$HOME/yolo26/outputs"
 mkdir -p "$SAVE_DIR"
