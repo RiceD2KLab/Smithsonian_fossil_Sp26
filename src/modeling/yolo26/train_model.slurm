@@ -43,7 +43,7 @@ export PYTHONPATH="$REPO_DIR:${PYTHONPATH:-}"
 
 cd "$SLURM_SUBMIT_DIR"
 
-python -m src.modeling.yolo26.run_train_nots \
+python -m src.modeling.yolo26.train \
   --model yolo26l.pt \
   --h5_root "$SCRATCH_ROOT/processed/tiles" \
   --splits_json "$SPLITS_JSON" \
