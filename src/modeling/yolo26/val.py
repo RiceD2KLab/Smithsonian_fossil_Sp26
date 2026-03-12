@@ -86,6 +86,7 @@ def create_h5_validation_dataloader(
     rank: int,
     cache_labels: bool,
     single_cls: bool,
+    use_best_plane: bool,
 ) -> Any:
     """
     Create a PyTorch DataLoader for the H5-backed validation/testing.
@@ -105,6 +106,7 @@ def create_h5_validation_dataloader(
         rank: Distributed training rank (-1 for single GPU).
         cache_labels: Whether to cache label metadata to disk.
         single_cls: Whether to use single-class detection mode.
+        use_best_plane: Whether to use the best focal plane.
 
     Returns:
         PyTorch DataLoader configured for H5 validation dataset.
@@ -121,6 +123,7 @@ def create_h5_validation_dataloader(
             data=validator.data,
             cache_labels=cache_labels,
             single_cls=single_cls,
+            use_best_plane=use_best_plane,
             imgsz=validator.args.imgsz,
             batch_size=batch_size,
             augment=False,  # No augmentation during evaluation
@@ -196,6 +199,7 @@ class H5DetectionValidator(DetectionValidator):
             rank=rank,
             cache_labels=getattr(GLOBAL_ARGS, "cache_labels", True),
             single_cls=getattr(GLOBAL_ARGS, "single_cls", False),
+            use_best_plane=getattr(GLOBAL_ARGS, "use_best_plane", False),
         )
 
 
@@ -304,6 +308,11 @@ Example:
         "--single_cls",
         action="store_true",
         help="Map all palynomorph types to single class.",
+    )
+    parser.add_argument(
+        "--use_best_plane",
+        action="store_true",
+        help="Use the best focal plane instead of the focus-stacked image.",
     )
 
     # Caching

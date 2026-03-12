@@ -128,6 +128,7 @@ def create_h5_dataloader(
     rank: int,
     cache_labels: bool,
     single_cls: bool,
+    use_best_plane: bool,
 ) -> Any:
     """
     Create a PyTorch DataLoader with the H5YOLODataset.
@@ -141,6 +142,7 @@ def create_h5_dataloader(
         rank: Distributed training rank.
         cache_labels: Whether to cache the label metadata to disk.
         single_cls: Whether to use single-class detection mode.
+        use_best_plane: Whether to use the best focal plane or the focus-stacked image.
 
     Returns:
         PyTorch DataLoader configured for H5 dataset.
@@ -163,6 +165,7 @@ def create_h5_dataloader(
             data=trainer.data,
             cache_labels=cache_labels,
             single_cls=single_cls,
+            use_best_plane=use_best_plane,
             imgsz=trainer.args.imgsz,
             batch_size=batch_size,
             augment=augment_enabled,
@@ -245,6 +248,11 @@ class H5DetectionTrainer(DetectionTrainer):
         # otherwise fall back to YOLO args defaults. ()
         cache_labels_env: str | None = os.environ.get("H5_CACHE_LABELS")
         single_cls_env: str | None = os.environ.get("H5_SINGLE_CLS")
+        use_best_plane_env: str | None = os.environ.get("H5_USE_BEST_PLANE")
+
+        cache_labels = cache_labels_env == "1"
+        single_cls = single_cls_env == "1"
+        use_best_plane = use_best_plane_env == "1"
 
         return create_h5_dataloader(
             trainer=self,
@@ -253,8 +261,9 @@ class H5DetectionTrainer(DetectionTrainer):
             mode=mode,
             batch_size=batch_size,
             rank=rank,
-            cache_labels=cache_labels_env,
-            single_cls=single_cls_env,
+            cache_labels=cache_labels,
+            single_cls=single_cls,
+            use_best_plane=use_best_plane,
         )
 
 
@@ -389,6 +398,11 @@ Example:
         action="store_true",
         help="Map all palynomorph types to single class (detection-only mode).",
     )
+    parser.add_argument(
+        "--use_best_plane",
+        action="store_true",
+        help="Use the best focal plane instead of the focus-stacked image.",
+    )
 
     return parser.parse_args()
 
@@ -490,6 +504,7 @@ def train_with_h5_dataset(model: YOLO, args: argparse.Namespace) -> None:
     os.environ["SPLITS_JSON"] = args.splits_json
     os.environ["H5_CACHE_LABELS"] = "1" if args.cache_labels else "0"
     os.environ["H5_SINGLE_CLS"] = "1" if args.single_cls else "0"
+    os.environ["H5_USE_BEST_PLANE"] = "1" if args.use_best_plane else "0"
 
     # Generate the YAML configuration pointing to the H5 data
     yaml_path: str = prepare_h5_yaml(

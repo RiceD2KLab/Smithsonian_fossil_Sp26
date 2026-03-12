@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import pickle
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -159,6 +160,7 @@ def compute_cache_file_path(
     split_name: str,
     stems_hash: str,
     use_single_class: bool,
+    use_best_plane: bool,
 ) -> Path:
     """
     Compute the path for the label cache file.
@@ -168,13 +170,15 @@ def compute_cache_file_path(
         split_name: The name of the dataset split (train, val, test).
         stems_hash: Hash of the sorted image stems for this split.
         use_single_class: Whether to use single-class mode.
+        use_best_plane: Whether to use the best focal plane.
 
     Returns:
         The path to the cache file.
     """
     # Use suffix to distinguish single-class from multi-class caches
     class_mode_suffix: str = "_single" if use_single_class else "_multi"
-    cache_filename: str = f".yolo_h5_{split_name}_{stems_hash[:12]}{class_mode_suffix}.cache"
+    plane_mode_suffix: str = "_best" if use_best_plane else "_stacked"
+    cache_filename: str = f".yolo_h5_{split_name}_{stems_hash[:12]}{class_mode_suffix}{plane_mode_suffix}.cache"
 
     return Path(h5_root_directory) / cache_filename
 
@@ -183,6 +187,7 @@ def build_labels_from_h5_files(
     image_file_identifiers: list[str],
     data_config: dict[str, Any],
     use_single_class: bool,
+    use_best_plane: bool,
 ) -> list[dict[str, Any]]:
     """
     Build YOLO-format label dictionaries from the H5 tile files.
@@ -191,6 +196,7 @@ def build_labels_from_h5_files(
         image_file_identifiers: List of H5 identifiers in format 'h5::/path::group'.
         data_config: The YOLO data configuration dictionary.
         use_single_class: Whether to use single-class mode.
+        use_best_plane: Whether to use the best focal plane.
 
     Returns:
         A list of label dictionaries, one per valid tile. Each dictionary contains:
@@ -224,11 +230,22 @@ def build_labels_from_h5_files(
                     f"Tile group '{tile_group_name}' doesn't exist in {h5_file_path}."
                 )
                 continue
-            if "focus_stacked" not in h5_file[tile_group_name]:
-                warnings.warn(
-                    f"Tile group '{tile_group_name}' doesn't have a 'focus_stacked' dataset."
-                )
-                continue
+            
+            # Check for the required dataset based on mode
+            if use_best_plane:
+                if "data" not in h5_file[tile_group_name]:
+                    warnings.warn(
+                        f"Tile group '{tile_group_name}' doesn't have a 'data' dataset for best_plane mode."
+                    )
+                    continue
+                image_source = h5_file[tile_group_name]["data"]
+            else:
+                if "focus_stacked" not in h5_file[tile_group_name]:
+                    warnings.warn(
+                        f"Tile group '{tile_group_name}' doesn't have a 'focus_stacked' dataset."
+                    )
+                    continue
+                image_source = h5_file[tile_group_name]["focus_stacked"]
 
             tile_group = h5_file[tile_group_name]
 
@@ -236,10 +253,10 @@ def build_labels_from_h5_files(
             raw_bboxes: np.ndarray = np.array(tile_group["bboxes"])
             raw_labels: np.ndarray = np.array(tile_group["labels"])
 
-            # Image dimensions from focus_stacked dataset
-            focus_stacked_shape = tile_group["focus_stacked"].shape
-            tile_height: int = int(focus_stacked_shape[0])
-            tile_width: int = int(focus_stacked_shape[1])
+            # Image dimensions from appropriate dataset
+            # For "data" (H, W, C, Z), for "focus_stacked" (H, W, C)
+            tile_height: int = int(image_source.shape[0])
+            tile_width: int = int(image_source.shape[1])
 
         # Handle tiles with no bounding boxes or labels
         if raw_bboxes.size == 0 and raw_labels.size == 0:
@@ -277,12 +294,13 @@ class H5YOLODataset(YOLODataset):
     Streams images and labels from H5 tile files.
 
     TExtends Ultralytics YOLODataset to load focus-stacked images
-    directly from HDF5 files, to bypass the standard image file approach (i.e., loading exported images).
+    (or a specific focal plane) directly from HDF5 files, to bypass 
+    the standard image file approach (i.e., loading exported images).
     
     Tiles are selected by the given split from the `train_val_test.json` file.
 
     DATA LOADING:
-        - Images come from focus_stacked dataset in each H5 tile group
+        - Images come from 'focus_stacked' (or 'data' if use_best_plane=True) dataset in each H5 tile group
         - Images are converted from RGB (H5 storage) to BGR (Ultralytics convention)
         - Bounding boxes are read from the bboxes and labels datasets
 
@@ -293,7 +311,7 @@ class H5YOLODataset(YOLODataset):
 
     CACHING:
         - Label metadata can be cached to avoid re-scanning the H5 files
-        - Cache is keyed by (h5_root, split_name, image_stems_hash, use_single_class)
+        - Cache is keyed by (h5_root, split_name, image_stems_hash, use_single_class, use_best_plane)
     """
 
     def __init__(
@@ -304,6 +322,7 @@ class H5YOLODataset(YOLODataset):
         data: dict[str, Any],
         cache_labels: bool,
         single_cls: bool,
+        use_best_plane: bool,
         imgsz: int,
         batch_size: int,
         augment: bool,
@@ -327,6 +346,7 @@ class H5YOLODataset(YOLODataset):
             data: YOLO data configuration dict with 'names' and 'nc'.
             cache_labels: Whether to cache the label metadata to disk.
             single_cls: Whether to map all classes to a single "palynomorph" class.
+            use_best_plane: Whether to use the best focal plane.
             imgsz: Target image size for training/validation.
             batch_size: Batch size.
             augment: Whether to enable training augmentations.
@@ -346,6 +366,7 @@ class H5YOLODataset(YOLODataset):
         self._split_name: str = split_name
         self._cache_labels: bool = cache_labels
         self.single_cls: bool = single_cls
+        self.use_best_plane: bool = use_best_plane
 
         # Default img_path to the H5 root directory if not specified
         if img_path is None:
@@ -434,6 +455,7 @@ class H5YOLODataset(YOLODataset):
             split_name=self._split_name,
             stems_hash=stems_hash,
             use_single_class=self.single_cls,
+            use_best_plane=self.use_best_plane,
         )
 
         # Attempt to load from cache (only on the main process for distributed training)
@@ -458,6 +480,7 @@ class H5YOLODataset(YOLODataset):
             image_file_identifiers=self.im_files,
             data_config=self.data,
             use_single_class=self.single_cls,
+            use_best_plane=self.use_best_plane,
         )
 
         # Validate that we found some tiles in the current split
@@ -493,8 +516,9 @@ class H5YOLODataset(YOLODataset):
         """
         Load a single image from the H5 file by index.
 
-        Reads the focus_stacked dataset from the corresponding H5 tile group
-        and converts from RGB to BGR (Ultralytics convention).
+        Reads either the focus_stacked dataset or the best focal plane
+        from the corresponding H5 tile group and converts from RGB to 
+        BGR (Ultralytics convention).
 
         Args:
             index: Index into the self.im_files for the image to load.
@@ -518,18 +542,24 @@ class H5YOLODataset(YOLODataset):
         # Parse H5 identifier
         _, h5_file_path, tile_group_name = image_identifier.split("::", 2)
 
-        # Load focus-stacked image from the H5 file
+        # Load image from the H5 file
         with h5py.File(h5_file_path, "r") as h5_file:
-            focus_stacked_image: np.ndarray = np.array(
-                h5_file[tile_group_name]["focus_stacked"]
-            )
+            group = h5_file[tile_group_name]
+            
+            if self.use_best_plane:
+                # Use focal_plane_ranking[0] to index into data (H, W, C, Z)
+                best_z = int(np.array(group["focal_plane_ranking"])[0])
+                raw_image: np.ndarray = np.array(group["data"][:, :, :, best_z])
+            else:
+                # Load precomputed focus-stacked image
+                raw_image = np.array(group["focus_stacked"])
 
         # Convert RGB to BGR (Ultralytics convention)
         # The H5 have images in RGB from the original NDPI/microscopy format
-        if focus_stacked_image.ndim == 3 and focus_stacked_image.shape[2] == 3:
-            bgr_image: np.ndarray = cv2.cvtColor(focus_stacked_image, cv2.COLOR_RGB2BGR)
+        if raw_image.ndim == 3 and raw_image.shape[2] == 3:
+            bgr_image: np.ndarray = cv2.cvtColor(raw_image, cv2.COLOR_RGB2BGR)
         else:
-            bgr_image = focus_stacked_image
+            bgr_image = raw_image
 
         image_height: int = bgr_image.shape[0]
         image_width: int = bgr_image.shape[1]
