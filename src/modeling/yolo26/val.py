@@ -116,6 +116,8 @@ def create_h5_validation_dataloader(
 
     # Synchronize dataset creation across distributed processes
     with torch_distributed_zero_first(rank):
+        best_plane_root: str | None = getattr(validator.args, "best_plane_root", None)
+
         dataset = H5YOLODataset(
             h5_root=h5_root,
             splits_json_path=splits_json,
@@ -135,6 +137,7 @@ def create_h5_validation_dataloader(
             task="detect",
             classes=None,  # Evaluate all classes
             fraction=1.0,  # Use all data
+            best_plane_root=best_plane_root,
         )
 
     # Build and return the dataloader
@@ -313,6 +316,18 @@ Example:
         "--use_best_plane",
         action="store_true",
         help="Use the best focal plane instead of the focus-stacked image.",
+    )
+
+    parser.add_argument(
+        "--best_plane_root",
+        type=str,
+        required=False,
+        default=None,
+        help=(
+            "Optional directory containing pre-extracted best-plane H5 cache files. "
+            "If set and the cache exists, evaluation reads image data from this cache "
+            "when --use_best_plane is enabled."
+        ),
     )
 
     # Caching

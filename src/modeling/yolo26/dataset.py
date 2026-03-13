@@ -335,6 +335,7 @@ class H5YOLODataset(YOLODataset):
         classes: list[int] | None,
         fraction: float,
         img_path: str | None = None,
+        best_plane_root: str | None = None,
     ) -> None:
         """
         Initialize the H5-backed YOLO dataset.
@@ -367,6 +368,9 @@ class H5YOLODataset(YOLODataset):
         self._cache_labels: bool = cache_labels
         self.single_cls: bool = single_cls
         self.use_best_plane: bool = use_best_plane
+        self._best_plane_root: str | None = (
+            os.path.abspath(best_plane_root) if best_plane_root else None
+        )
 
         # Default img_path to the H5 root directory if not specified
         if img_path is None:
@@ -391,6 +395,27 @@ class H5YOLODataset(YOLODataset):
             data=data,
             fraction=fraction,
         )
+
+    def _resolve_h5_path(self, source_h5_path: str) -> tuple[str, bool]:
+        """
+        Resolve the H5 file path to read image data from.
+
+        If best_plane_root is set and the corresponding cache file exists and is
+        marked complete, return the cache path. Otherwise return the source path.
+        """
+        if self.use_best_plane and self._best_plane_root:
+            filename = os.path.basename(source_h5_path)
+            cache_path = os.path.join(self._best_plane_root, filename)
+            if os.path.isfile(cache_path):
+                try:
+                    with h5py.File(cache_path, "r") as h5f:
+                        if h5f.attrs.get("extraction_complete", False):
+                            return cache_path, True
+                except Exception:
+                    # Cache file is corrupt or unreadable; fall back to source.
+                    pass
+
+        return source_h5_path, False
 
     def get_img_files(self, img_path: str | list[str]) -> list[str]:
         """
@@ -542,11 +567,15 @@ class H5YOLODataset(YOLODataset):
         # Parse H5 identifier
         _, h5_file_path, tile_group_name = image_identifier.split("::", 2)
 
-        # Load image from the H5 file
-        with h5py.File(h5_file_path, "r") as h5_file:
+        resolved_path, is_cache = self._resolve_h5_path(h5_file_path)
+
+        # Load image from the resolved H5 file
+        with h5py.File(resolved_path, "r") as h5_file:
             group = h5_file[tile_group_name]
-            
-            if self.use_best_plane:
+
+            if is_cache:
+                raw_image = np.array(group["best_plane"])
+            elif self.use_best_plane:
                 # Use focal_plane_ranking[0] to index into data (H, W, C, Z)
                 best_z = int(np.array(group["focal_plane_ranking"])[0])
                 raw_image: np.ndarray = np.array(group["data"][:, :, :, best_z])

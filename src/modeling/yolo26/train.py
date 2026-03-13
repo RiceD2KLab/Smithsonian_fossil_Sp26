@@ -129,6 +129,7 @@ def create_h5_dataloader(
     cache_labels: bool,
     single_cls: bool,
     use_best_plane: bool,
+    best_plane_root: str | None,
 ) -> Any:
     """
     Create a PyTorch DataLoader with the H5YOLODataset.
@@ -177,6 +178,7 @@ def create_h5_dataloader(
             task="detect",
             classes=getattr(trainer.args, "classes", None),
             fraction=trainer.args.fraction if is_training else 1.0,
+            best_plane_root=best_plane_root,
         )
 
     # Determine shuffle behavior
@@ -234,7 +236,7 @@ class H5DetectionTrainer(DetectionTrainer):
         assert mode in valid_modes, f"Mode must be one of {valid_modes}, not '{mode}'."
 
         # Read H5 configuration from environment variables.
-        # Needed so it's set in the main process before launching training 
+        # Needed so it's set in the main process before launching training
         # so that it's visible to all DDP worker processes.
         h5_root: str | None = os.environ.get("H5_ROOT")
         splits_json: str | None = os.environ.get("SPLITS_JSON")
@@ -245,14 +247,16 @@ class H5DetectionTrainer(DetectionTrainer):
             )
 
         # Cache and single-class flags: prefer environment overrides if present,
-        # otherwise fall back to YOLO args defaults. ()
+        # otherwise fall back to YOLO args defaults.
         cache_labels_env: str | None = os.environ.get("H5_CACHE_LABELS")
         single_cls_env: str | None = os.environ.get("H5_SINGLE_CLS")
         use_best_plane_env: str | None = os.environ.get("H5_USE_BEST_PLANE")
+        best_plane_root_env: str | None = os.environ.get("H5_BEST_PLANE_ROOT")
 
         cache_labels = cache_labels_env == "1"
         single_cls = single_cls_env == "1"
         use_best_plane = use_best_plane_env == "1"
+        best_plane_root = best_plane_root_env or None
 
         return create_h5_dataloader(
             trainer=self,
@@ -264,6 +268,7 @@ class H5DetectionTrainer(DetectionTrainer):
             cache_labels=cache_labels,
             single_cls=single_cls,
             use_best_plane=use_best_plane,
+            best_plane_root=best_plane_root,
         )
 
 
@@ -404,6 +409,18 @@ Example:
         help="Use the best focal plane instead of the focus-stacked image.",
     )
 
+    parser.add_argument(
+        "--best_plane_root",
+        type=str,
+        required=False,
+        default=None,
+        help=(
+            "Optional directory containing pre-extracted best-plane H5 cache files. "
+            "If set and the cache exists, training reads image data from this cache "
+            "when --use_best_plane is enabled, instead of slicing from the full Z-stack."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -505,6 +522,7 @@ def train_with_h5_dataset(model: YOLO, args: argparse.Namespace) -> None:
     os.environ["H5_CACHE_LABELS"] = "1" if args.cache_labels else "0"
     os.environ["H5_SINGLE_CLS"] = "1" if args.single_cls else "0"
     os.environ["H5_USE_BEST_PLANE"] = "1" if args.use_best_plane else "0"
+    os.environ["H5_BEST_PLANE_ROOT"] = args.best_plane_root or ""
 
     # Generate the YAML configuration pointing to the H5 data
     yaml_path: str = prepare_h5_yaml(
