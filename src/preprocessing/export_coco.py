@@ -26,6 +26,7 @@ Usage:
         --mode best_plane \
         --splits_json data/train_val_test.json \
         --workers 4
+        --single_cls
 """
 
 from __future__ import annotations
