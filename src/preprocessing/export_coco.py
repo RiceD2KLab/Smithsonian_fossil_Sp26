@@ -255,7 +255,6 @@ def run(
     output_dir: str,
     mode: ExportMode,
     splits_json: Optional[str],
-    best_plane_root: Optional[str],
     workers: int,
     image_format: str,
     single_cls: bool,
@@ -309,7 +308,7 @@ def run(
                 pool.submit(
                     _export_tile,
                     h5_path, group_name, image_stem,
-                    split_img_dir, mode, image_format, single_cls, best_plane_root,
+                    split_img_dir, mode, image_format, single_cls,
                 ): (image_stem, group_name)
                 for h5_path, image_stem, group_name in tiles
             }
