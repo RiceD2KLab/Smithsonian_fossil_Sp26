@@ -154,7 +154,8 @@ def _export_tile(
             x, y, bw, bh = bbox
             if not _is_valid_bbox(bw, bh):
                 continue
-            cat_id = 1 if single_cls else int(label)
+            # H5 labels are 1-indexed; convert to 0-indexed for rfdetr & yolo compatibility.
+            cat_id = 0 if single_cls else int(label) - 1
             valid_bboxes.append([float(x), float(y), float(bw), float(bh)])
             valid_labels.append(cat_id)
 
@@ -198,19 +199,20 @@ def _export_tile(
 
 def _build_categories(metadata_json_path: Optional[str], single_cls: bool) -> list[dict]:
     if single_cls:
-        return [{"id": 1, "name": "palynomorph", "supercategory": "palynomorph"}]
+        return [{"id": 0, "name": "palynomorph", "supercategory": "palynomorph"}]
 
     if metadata_json_path and os.path.isfile(metadata_json_path):
         with open(metadata_json_path) as f:
             meta = json.load(f)
         label_map: dict[str, int] = meta.get("label_map", {})
         if label_map:
+            # H5 labels are 1-indexed; convert to 0-indexed for rfdetr & yolo compatibility.
             return [
-                {"id": int(idx), "name": name, "supercategory": "palynomorph"}
+                {"id": int(idx) - 1, "name": name, "supercategory": "palynomorph"}
                 for name, idx in sorted(label_map.items(), key=lambda kv: kv[1])
             ]
 
-    return [{"id": 1, "name": "palynomorph", "supercategory": "palynomorph"}]
+    return [{"id": 0, "name": "palynomorph", "supercategory": "palynomorph"}]
 
 
 def _assemble_coco_json(records: list[dict], categories: list[dict]) -> dict:
