@@ -168,8 +168,17 @@ def main() -> None:
 
     staging_dir = os.path.join(args.output_dir, ".rfdetr_dataset")
     class_names = _read_class_names(args.coco_dir)
-    _validate_category_ids(args.coco_dir, class_names)
-    dataset_dir = _prepare_roboflow_layout(args.coco_dir, staging_dir)
+
+    # For DDP training with torchrun, each GPU spawns its own process.
+    # Only LOCAL_RANK 0 creates should create the staging symlinks;
+    # The other ranks should skip straight to training; the symlinks
+    # will already exist by the time model.train() needs them.
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    if local_rank == 0:
+        _validate_category_ids(args.coco_dir, class_names)
+        _prepare_roboflow_layout(args.coco_dir, staging_dir)
+
+    dataset_dir = staging_dir
 
     model = _MODEL_CLASSES[args.model]()
     model.train(

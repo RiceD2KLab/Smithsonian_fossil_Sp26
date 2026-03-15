@@ -4,10 +4,10 @@
 #SBATCH --partition=commons
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
+#SBATCH --gres=gpu:2
+#SBATCH --time=12:00:00
 #SBATCH --export=ALL
 #SBATCH --output=slurm-rfdetr-%j.out
 #SBATCH --error=slurm-rfdetr-%j.err
@@ -41,17 +41,18 @@ cd "$SLURM_SUBMIT_DIR"
 
 # PyTorch JITerator kernel cache corruption causes "CUDA driver error: invalid argument"
 # on torch.prod() — known bug pytorch/pytorch#132756. Use a fresh per-job cache dir.
-export PYTORCH_KERNEL_CACHE_PATH="/tmp/torch_kernels_${SLURM_JOB_ID}"
+# Cleaning out the cache directory every run to avoid corruption.
+rm -rf "$PYTORCH_KERNEL_CACHE_PATH"
 
-export MASTER_ADDR=localhost
-export MASTER_PORT=29500
-
-python -m src.models.rfdetr.train \
+N_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
+# torchrun spawns one process per GPU; sets RANK/WORLD_SIZE/LOCAL_RANK for rfdetr DDP init.
+torchrun --nproc_per_node="$N_GPUS" --master_addr=localhost --master_port=29500 \
+  -m src.models.rfdetr.train \
   --model base \
   --coco_dir "$COCO_DIR" \
   --epochs 200 \
-  --batch_size 4 \
-  --grad_accum 4 \
+  --batch_size 16 \
+  --grad_accum 1 \
   --lr 1e-4 \
   --lr_scheduler cosine \
   --lr_min_factor 0.01 \
@@ -59,7 +60,7 @@ python -m src.models.rfdetr.train \
   --weight_decay 1e-4 \
   --imgsz 1008 \
   --output_dir "$JOB_OUTPUT_DIR/rfdetr_base" \
-  --workers 4
+  --workers 6
 
 SAVE_DIR="$HOME/rfdetr/outputs"
 mkdir -p "$SAVE_DIR"
