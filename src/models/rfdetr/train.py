@@ -32,6 +32,17 @@ _MODEL_CLASSES = {
 
 _SPLIT_MAP = {"train": "train", "val": "valid", "test": "test"}
 
+# Custom augmentation: flips, rotation, brightness/contrast, HSV
+AUG_CONFIG = {
+    "custom": {
+        "HorizontalFlip": {"p": 0.5},
+        "VerticalFlip": {"p": 0.5},
+        "Rotate": {"limit": 180, "p": 0.7},
+        "RandomBrightnessContrast": {"brightness_limit": 0.2, "contrast_limit": 0.2, "p": 0.4},
+        "HueSaturationValue": {"hue_shift_limit": 10, "sat_shift_limit": 20, "val_shift_limit": 20, "p": 0.3},
+    },
+    "none": {},
+}
 
 def _read_class_names(coco_dir: str) -> list[str]:
     """Read category names from the first available COCO annotations file."""
@@ -73,6 +84,33 @@ def _prepare_roboflow_layout(coco_dir: str, staging_dir: str) -> str:
                     link.symlink_to(img_file)
 
     return str(staging)
+
+
+def _validate_category_ids(coco_dir: str, class_names: list[str]) -> None:
+    """
+    Verify that all annotation category_ids are in [0, num_classes-1].
+    rfdetr uses category_id directly as a 0-indexed class label; any value
+    >= num_classes causes a suppressed CUDA index-out-of-bounds during training.
+    """
+    num_classes = len(class_names)
+    for split in ("train", "val", "test"):
+        ann_file = Path(coco_dir) / "annotations" / f"instances_{split}.json"
+        if not ann_file.exists():
+            continue
+        with open(ann_file) as f:
+            coco = json.load(f)
+        bad = [
+            ann["category_id"]
+            for ann in coco.get("annotations", [])
+            if ann["category_id"] >= num_classes
+        ]
+        if bad:
+            raise ValueError(
+                f"[{split}] found category_id(s) {sorted(set(bad))} but "
+                f"num_classes={num_classes} (max valid id={num_classes - 1}).\n"
+                f"Re-run export_coco.py with --single_cls and delete the staging "
+                f"dir before resubmitting."
+            )
 
 
 def parse_args() -> argparse.Namespace:
@@ -128,34 +166,26 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--output_dir", default="runs/rfdetr", help="Checkpoint output directory.")
     p.add_argument("--workers", type=int, default=4, help="DataLoader num_workers.")
+    p.add_argument(
+        "--early_stopping_patience",
+        type=int,
+        default=20,
+        help="Epochs without mAP improvement before stopping (default: 20).",
+    )
+    p.add_argument(
+        "--aug_config",
+        choices=list(AUG_CONFIG.keys()),
+        default="custom",
+        help="Augmentation configuration (default: custom).",
+    )
+    p.add_argument(
+        "--drop_path",
+        type=float,
+        default=0.0,
+        help="Stochastic depth drop path rate for ViT backbone (default: 0.0).",
+    )
+
     return p.parse_args()
-
-
-def _validate_category_ids(coco_dir: str, class_names: list[str]) -> None:
-    """
-    Verify that all annotation category_ids are in [0, num_classes-1].
-    rfdetr uses category_id directly as a 0-indexed class label; any value
-    >= num_classes causes a suppressed CUDA index-out-of-bounds during training.
-    """
-    num_classes = len(class_names)
-    for split in ("train", "val", "test"):
-        ann_file = Path(coco_dir) / "annotations" / f"instances_{split}.json"
-        if not ann_file.exists():
-            continue
-        with open(ann_file) as f:
-            coco = json.load(f)
-        bad = [
-            ann["category_id"]
-            for ann in coco.get("annotations", [])
-            if ann["category_id"] >= num_classes
-        ]
-        if bad:
-            raise ValueError(
-                f"[{split}] found category_id(s) {sorted(set(bad))} but "
-                f"num_classes={num_classes} (max valid id={num_classes - 1}).\n"
-                f"Re-run export_coco.py with --single_cls and delete the staging "
-                f"dir before resubmitting."
-            )
 
 
 def main() -> None:
@@ -197,6 +227,10 @@ def main() -> None:
         multi_scale=False,
         expanded_scales=False,
         class_names=class_names,
+        early_stopping_patience=args.early_stopping_patience,
+        early_stopping_use_ema=True,
+        aug_config=AUG_CONFIG[args.aug_config],
+        drop_path=args.drop_path,
     )
 
 
