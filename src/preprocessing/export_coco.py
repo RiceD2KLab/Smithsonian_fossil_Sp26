@@ -2,7 +2,7 @@
 Convert H5 tile dataset to COCO JSON + image files.
 
 Different extraction modes: focus_stack, best_plane, plane N,
-planes N1,N2, and all_planes. 
+planes N1,N2, all_planes, and top_k_planes.
 
 Outputs standard COCO JSON + images. 
 Also writes a dataset.yaml (Ultralytics format) for direct YOLO use.
@@ -65,8 +65,9 @@ def _is_valid_bbox(w: float, h: float) -> bool:
 
 @dataclasses.dataclass
 class ExportMode:
-    kind: str               # focus_stack | best_plane | plane | planes | all_planes
-    plane_indices: list[int]  # populated for plane/planes; empty for focus_stack/best_plane/all_planes
+    kind: str               # focus_stack | best_plane | plane | planes | all_planes | top_k_planes
+    plane_indices: list[int]  # populated for plane/planes; empty for focus_stack/best_plane/all_planes/top_k_planes
+    top_k: int = 5          # used only when kind == "top_k_planes"
 
 
 def build_export_mode(args: argparse.Namespace) -> ExportMode:
@@ -80,6 +81,9 @@ def build_export_mode(args: argparse.Namespace) -> ExportMode:
             raise ValueError("--plane_indices is required when --mode planes")
         indices = [int(x.strip()) for x in args.plane_indices.split(",")]
         return ExportMode(kind=kind, plane_indices=indices)
+    if kind == "top_k_planes":
+        top_k = getattr(args, "top_k", 5) or 5
+        return ExportMode(kind=kind, plane_indices=[], top_k=top_k)
     return ExportMode(kind=kind, plane_indices=[])
 
 
@@ -123,6 +127,15 @@ def _export_tile(
                 best_z = int(np.array(grp["focal_plane_ranking"])[0])
                 raw_images = [(np.array(grp["data"][:, :, :, best_z]), None)]
 
+            elif mode.kind == "top_k_planes":
+                if "data" not in grp or "focal_plane_ranking" not in grp:
+                    return [{"skipped": True, "skip_reason": "data or focal_plane_ranking missing"}]
+                ranking = np.array(grp["focal_plane_ranking"])  # (Z,) best→worst
+                data = np.array(grp["data"])  # (H, W, C, Z)
+                k = min(mode.top_k, len(ranking))
+                top_z_list = [int(ranking[i]) for i in range(k)]
+                raw_images = [(data[:, :, :, z], z) for z in top_z_list]
+
             else:  # plane | planes | all_planes
                 if "data" not in grp:
                     return [{"skipped": True, "skip_reason": "data dataset missing"}]
@@ -161,7 +174,7 @@ def _export_tile(
             valid_labels.append(cat_id)
 
         # 3. Write images and build records
-        multi_plane = mode.kind in ("plane", "planes", "all_planes")
+        multi_plane = mode.kind in ("plane", "planes", "all_planes", "top_k_planes")
         records: list[dict] = []
 
         for img_arr, z_idx in raw_images:
@@ -365,14 +378,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         required=True,
-        choices=["focus_stack", "best_plane", "plane", "planes", "all_planes"],
+        choices=["focus_stack", "best_plane", "plane", "planes", "all_planes", "top_k_planes"],
         help=(
             "Image extraction mode: "
             "focus_stack=precomputed focus stack, "
             "best_plane=sharpest Z-plane via focal_plane_ranking, "
             "plane=single Z-plane (requires --plane_index), "
             "planes=selected Z-planes (requires --plane_indices), "
-            "all_planes=every Z-plane"
+            "all_planes=every Z-plane, "
+            "top_k_planes=top K sharpest planes per tile (use --top_k, default 5)"
         ),
     )
     parser.add_argument(
@@ -386,6 +400,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help='Comma-separated Z-plane indices, e.g. "0,5,10" (required when --mode planes)',
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=5,
+        help="Number of sharpest planes to export per tile (used with --mode top_k_planes, default: 5)",
     )
     parser.add_argument(
         "--splits_json",
