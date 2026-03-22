@@ -16,10 +16,10 @@ module purge
 
 REPO_DIR="$SLURM_SUBMIT_DIR"
 SCRATCH_ROOT="${SHARED_SCRATCH}/$USER"
-VENV_DIR="${SCRATCH_ROOT}/smithsonian_venv"
+VENV_DIR="${SCRATCH_ROOT}/miniconda_venv"
 JOB_OUTPUT_DIR="$SCRATCH_ROOT/rfdetr/outputs"
-COCO_DIR="$SCRATCH_ROOT/processed/coco_best_plane"
-RUN_NAME="rfdetr_run$SLURM_JOB_ID"
+COCO_DIR="$SCRATCH_ROOT/processed/coco_focus_stack"
+RUN_NAME="rfdetr_focus_stack_run$SLURM_JOB_ID"
 
 unset PYTHONHOME
 unset PYTHONPATH
