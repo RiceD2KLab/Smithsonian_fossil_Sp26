@@ -1,12 +1,18 @@
 """
-Evaluates trained YOLO26 models on the test (or val) split. 
+Evaluates trained YOLO26 models on the test (or val) split.
 Computes standard detection metrics including mAP@0.5, mAP@0.5:0.95, precision, recall, and F1.
+
+Expects a COCO export produced by ``export_coco.py``, which writes:
+
+    coco_dir/
+      images/train/   images/val/   images/test/
+      annotations/    instances_train.json  instances_val.json  instances_test.json
+      dataset.yaml
 
 COMMAND (typical usage):
     python -m src.modeling.yolo26.val \\
         --model runs/detect/yolo26/weights/best.pt \\
-        --h5_root data/tiles \\
-        --splits_json data/tiles/train_val_test.json \\
+        --coco_dir data/coco_export \\
         --split test \\
         --imgsz 1024 \\
         --batch 8 \\
@@ -14,7 +20,7 @@ COMMAND (typical usage):
         --project runs/detect \\
         --name yolo26_val \\
         --plots \\
-        --single_cls
+        --save_json
 
 EVALUATION METRICS:
     - mAP@0.5: Mean Average Precision at IoU threshold 0.5
@@ -27,8 +33,7 @@ OUTPUTS:
     - Confusion matrix plot
     - PR curve (Precision-Recall)
     - F1 curve across confidence thresholds
-    - Predictions visualization (optional)
-    - results.json if --save_json is enabled
+    - predictions.json if --save_json is enabled
 """
 
 from __future__ import annotations
@@ -38,172 +43,8 @@ import os
 from typing import Any
 
 from ultralytics import YOLO
-from ultralytics.data.build import build_dataloader
-from ultralytics.models.yolo.detect import DetectionValidator
-from ultralytics.utils import colorstr
-from ultralytics.utils.torch_utils import torch_distributed_zero_first, unwrap_model
 
-from src.modeling.yolo26.dataset import H5YOLODataset
-from src.modeling.yolo26.utils import prepare_h5_yaml
-
-
-# Global arguments for access by H5DetectionValidator
-# Required because Ultralytics validator instantiation doesn't pass custom args
-GLOBAL_ARGS: argparse.Namespace | None = None
-
-
-# Dataloader Configuration Helpers
-
-def compute_validator_stride(validator: DetectionValidator) -> int:
-    """
-    Determine the model's maximum stride for dataset configuration.
-
-    Args:
-        validator: DetectionValidator instance with model/stride attributes.
-
-    Returns:
-        Integer stride value, or Ultralytics YOLO defaults to stride 32 if not determinable.
-    """
-    # Try to get stride from validator attribute
-    if hasattr(validator, "stride") and validator.stride is not None:
-        return int(validator.stride)
-
-    # Try to get stride from loaded model
-    if hasattr(validator, "model") and validator.model is not None:
-        unwrapped_model = unwrap_model(validator.model)
-        return max(int(unwrapped_model.stride.max()), 32)
-
-    # Default YOLO stride
-    return 32
-
-
-def create_h5_validation_dataloader(
-    validator: DetectionValidator,
-    h5_root: str,
-    splits_json: str,
-    split_name: str,
-    batch_size: int,
-    rank: int,
-    cache_labels: bool,
-    single_cls: bool,
-    use_best_plane: bool,
-) -> Any:
-    """
-    Create a PyTorch DataLoader for the H5-backed validation/testing.
-
-    Unlike training, validation uses:
-        - No augmentation (augment=False)
-        - Rectangular mode for efficiency (rect=True)
-        - Higher padding factor (pad=0.5)
-        - No shuffling
-
-    Args:
-        validator: DetectionValidator instance for accessing the model/args.
-        h5_root: Directory containing .h5 tile files.
-        splits_json: Path to train_val_test.json.
-        split_name: Which split to evaluate ("train", "val", or "test").
-        batch_size: Number of samples per batch.
-        rank: Distributed training rank (-1 for single GPU).
-        cache_labels: Whether to cache label metadata to disk.
-        single_cls: Whether to use single-class detection mode.
-        use_best_plane: Whether to use the best focal plane.
-
-    Returns:
-        PyTorch DataLoader configured for H5 validation dataset.
-    """
-    # Compute model stride for proper image sizing
-    model_stride: int = compute_validator_stride(validator)
-
-    # Synchronize dataset creation across distributed processes
-    with torch_distributed_zero_first(rank):
-        best_plane_root: str | None = getattr(validator.args, "best_plane_root", None)
-
-        dataset = H5YOLODataset(
-            h5_root=h5_root,
-            splits_json_path=splits_json,
-            split_name=split_name,
-            data=validator.data,
-            cache_labels=cache_labels,
-            single_cls=single_cls,
-            use_best_plane=use_best_plane,
-            imgsz=validator.args.imgsz,
-            batch_size=batch_size,
-            augment=False,  # No augmentation during evaluation
-            hyp=validator.args,
-            rect=True,  # Rectangular mode for efficiency
-            stride=model_stride,
-            pad=0.5,  # Standard validation padding
-            prefix=colorstr(f"{split_name}: "),
-            task="detect",
-            classes=None,  # Evaluate all classes
-            fraction=1.0,  # Use all data
-            best_plane_root=best_plane_root,
-        )
-
-    # Build and return the dataloader
-    return build_dataloader(
-        dataset,
-        batch=batch_size,
-        workers=validator.args.workers,
-        shuffle=False,  # Never shuffle during evaluation
-        rank=rank,
-        drop_last=False,  # Evaluate all samples
-    )
-
-
-class H5DetectionValidator(DetectionValidator):
-    """
-    Detection validator that supports the H5-backed datasets.
-
-    Extends Ultralytics DetectionValidator to intercept the 
-    dataloader creation and substitute the H5YOLODataset.
-    """
-
-    def get_dataloader(
-        self,
-        dataset_path: str,
-        batch_size: int,
-        rank: int = 0,
-        mode: str = "",
-    ) -> Any:
-        """
-        Create dataloader for validation/testing.
-
-        Ultralytics calls this with only (dataset_path, batch_size); rank and mode
-        default so the signature matches the parent API (will error if not provided for some reason).
-
-        Args:
-            dataset_path: Path to dataset (unused for H5 mode).
-            batch_size: Samples per batch.
-            rank: Distributed training rank (default 0).
-            mode: Fallback split name if not in args (default "val").
-
-        Returns:
-            PyTorch DataLoader for evaluation.
-        """
-        # Access global configuration
-        global GLOBAL_ARGS
-        h5_root: str = GLOBAL_ARGS.h5_root
-        splits_json: str = GLOBAL_ARGS.splits_json
-
-        if not h5_root or not splits_json:
-            raise ValueError(
-                "H5 validation requires --h5_root and --splits_json. "
-            )
-
-        split_name: str = getattr(GLOBAL_ARGS, "split", mode)
-
-        return create_h5_validation_dataloader(
-            validator=self,
-            h5_root=h5_root,
-            splits_json=splits_json,
-            split_name=split_name,
-            batch_size=batch_size,
-            rank=rank,
-            cache_labels=getattr(GLOBAL_ARGS, "cache_labels", True),
-            single_cls=getattr(GLOBAL_ARGS, "single_cls", False),
-            use_best_plane=getattr(GLOBAL_ARGS, "use_best_plane", False),
-        )
+from src.modeling.yolo26.utils import get_coco_yaml_path
 
 
 def parse_validation_arguments() -> argparse.Namespace:
@@ -214,14 +55,13 @@ def parse_validation_arguments() -> argparse.Namespace:
         Namespace with parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        description="Evaluate YOLO26 model on H5-backed test/val split.",
+        description="Evaluate a YOLO26 model on a COCO-format palynomorph dataset.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example:
     python -m src.modeling.yolo26.val \\
         --model runs/detect/yolo26/weights/best.pt \\
-        --h5_root data/tiles \\
-        --splits_json data/tiles/train_val_test.json \\
+        --coco_dir data/coco_export \\
         --split test \\
         --imgsz 1024 \\
         --batch 8 \\
@@ -231,7 +71,7 @@ Example:
         """,
     )
 
-    # Model configuration
+    # Model
     parser.add_argument(
         "--model",
         type=str,
@@ -239,31 +79,22 @@ Example:
         help="Path to trained model weights (.pt).",
     )
 
+    # Dataset
     parser.add_argument(
-        "--h5_root",
+        "--coco_dir",
         type=str,
         required=True,
-        help="Directory containing .h5 tile files.",
+        help=(
+            "Root directory of the COCO export produced by export_coco.py. "
+            "Must contain dataset.yaml, images/, and annotations/."
+        ),
     )
-    parser.add_argument(
-        "--splits_json",
-        type=str,
-        required=True,
-        help="Path to train_val_test.json.",
-    )
-    parser.add_argument(
-        "--metadata",
-        type=str,
-        required=False,
-        help="Path to tiles metadata.json for class names. Optional.",
-    )
-
-    # Split selection
     parser.add_argument(
         "--split",
         type=str,
         required=True,
-        help="Split to evaluate: 'train', 'val', or 'test'.",
+        choices=["train", "val", "test"],
+        help="Which split to evaluate.",
     )
 
     # Evaluation configuration
@@ -271,7 +102,7 @@ Example:
         "--imgsz",
         type=int,
         required=True,
-        help="Input image size.",
+        help="Input image size (pixels).",
     )
     parser.add_argument(
         "--batch",
@@ -283,15 +114,15 @@ Example:
         "--workers",
         type=int,
         required=True,
-        help="Number of dataloader workers.",
+        help="Number of dataloader worker processes.",
     )
 
-    # Device and output configuration
+    # Device and output
     parser.add_argument(
         "--device",
         type=str,
-        required=False,
-        help="Device to run on (e.g., '0', 'cpu'). Auto-detected if not set.",
+        default=None,
+        help="Device to run on (e.g. '0', 'cpu'). Auto-detected if not set.",
     )
     parser.add_argument(
         "--project",
@@ -303,94 +134,42 @@ Example:
         "--name",
         type=str,
         required=True,
-        help="Run name within project directory.",
-    )
-
-    # Detection mode
-    parser.add_argument(
-        "--single_cls",
-        action="store_true",
-        help="Map all palynomorph types to single class.",
-    )
-    parser.add_argument(
-        "--use_best_plane",
-        action="store_true",
-        help="Use the best focal plane instead of the focus-stacked image.",
-    )
-
-    parser.add_argument(
-        "--best_plane_root",
-        type=str,
-        required=False,
-        default=None,
-        help=(
-            "Optional directory containing pre-extracted best-plane H5 cache files. "
-            "If set and the cache exists, evaluation reads image data from this cache "
-            "when --use_best_plane is enabled."
-        ),
-    )
-
-    # Caching
-    parser.add_argument(
-        "--cache_labels",
-        action="store_true",
-        help="Cache H5 label metadata to disk.",
+        help="Run name within the project directory.",
     )
 
     # Output options
     parser.add_argument(
         "--save_json",
         action="store_true",
-        help="Save results to COCO-format JSON.",
+        help="Save predictions to COCO-format predictions.json.",
     )
     parser.add_argument(
         "--plots",
         action="store_true",
         help="Generate evaluation plots (confusion matrix, PR curve, etc.).",
     )
-    parser.add_argument(
-        "--no_plots",
-        action="store_false",
-        dest="plots",
-        help="Disable plot generation.",
-    )
 
     return parser.parse_args()
 
 
-def validate_paths(h5_root: str, splits_json: str) -> None:
+def validate_coco_dir(coco_dir: str) -> None:
     """
-    Validate that the required paths exist.
+    Validate that the COCO export directory has the expected structure.
 
     Args:
-        h5_root: Directory path to validate.
-        splits_json: File path to validate.
+        coco_dir: Root directory of the COCO export.
 
     Raises:
-        FileNotFoundError: If either path doesn't exist.
+        FileNotFoundError: If coco_dir or dataset.yaml are missing.
     """
-    if not os.path.isdir(h5_root):
-        raise FileNotFoundError(f"h5_root directory not found: {h5_root}")
-    if not os.path.isfile(splits_json):
-        raise FileNotFoundError(f"splits_json file not found: {splits_json}")
-
-
-def auto_detect_single_class_model(model: YOLO) -> bool:
-    """
-    Check if a model is configured for single-class detection.
-
-    Args:
-        model: Loaded YOLO model instance.
-
-    Returns:
-        True if model has nc=1 (single class), False otherwise.
-    """
-    try:
-        if hasattr(model.model, "nc") and model.model.nc == 1:
-            return True
-    except AttributeError:
-        pass
-    return False
+    if not os.path.isdir(coco_dir):
+        raise FileNotFoundError(f"coco_dir not found: {coco_dir}")
+    yaml_path = get_coco_yaml_path(coco_dir)
+    if not os.path.isfile(yaml_path):
+        raise FileNotFoundError(
+            f"dataset.yaml not found at {yaml_path}. "
+            "Run export_coco.py first to generate the COCO dataset."
+        )
 
 
 def build_validation_overrides(
@@ -406,22 +185,22 @@ def build_validation_overrides(
     plots: bool,
 ) -> dict[str, Any]:
     """
-    Build the overrides dictionary for the YOLO validation.
+    Build the overrides dictionary for YOLO validation.
 
     Args:
-        yaml_path: Path to H5 dataset YAML.
-        split: Which split to evaluate.
+        yaml_path: Path to the COCO dataset.yaml.
+        split: Which split to evaluate ("train", "val", or "test").
         imgsz: Input image size.
         batch: Batch size.
-        workers: Number of workers.
+        workers: Number of dataloader workers.
         project: Project output directory.
         name: Run name.
-        device: Device string or None for auto-detection.
-        save_json: Whether to save COCO-format JSON.
-        plots: Whether to generate plots.
+        device: Device string, or None for auto-detection.
+        save_json: Whether to save COCO-format predictions JSON.
+        plots: Whether to generate evaluation plots.
 
     Returns:
-        Dictionary of validation overrides.
+        Dictionary of validation overrides for model.val().
     """
     overrides: dict[str, Any] = {
         "data": yaml_path,
@@ -445,37 +224,18 @@ def main() -> None:
     """
     Main entry point for YOLO26 evaluation.
 
-    Parses arguments, loads model, generates YAML config, and runs
-    validation with custom H5-aware validator.
+    Validates the COCO export directory, loads the model, and runs validation
+    using the dataset.yaml generated by export_coco.py.
     """
-    # Parse command-line arguments
-    args: argparse.Namespace = parse_validation_arguments()
+    args = parse_validation_arguments()
 
-    # Store args globally for access by H5DetectionValidator
-    global GLOBAL_ARGS
-    GLOBAL_ARGS = args
+    validate_coco_dir(args.coco_dir)
 
-    # Validate required paths exist
-    validate_paths(args.h5_root, args.splits_json)
-
-    # Load trained model
     model: YOLO = YOLO(args.model)
 
-    # Auto-detect single_cls for models trained on single class
-    if not args.single_cls and not args.metadata:
-        if auto_detect_single_class_model(model):
-            print("Auto-detected single-class model (nc=1). Enabling --single_cls.")
-            args.single_cls = True
+    yaml_path = get_coco_yaml_path(args.coco_dir)
 
-    # Generate YAML configuration pointing to H5 data
-    yaml_path: str = prepare_h5_yaml(
-        h5_root=args.h5_root,
-        metadata_path=args.metadata,
-        single_cls=args.single_cls,
-    )
-
-    # Build validation configuration
-    overrides: dict[str, Any] = build_validation_overrides(
+    overrides = build_validation_overrides(
         yaml_path=yaml_path,
         split=args.split,
         imgsz=args.imgsz,
@@ -488,7 +248,7 @@ def main() -> None:
         plots=args.plots,
     )
 
-    model.val(**overrides, validator=H5DetectionValidator)
+    model.val(**overrides)
 
 
 if __name__ == "__main__":

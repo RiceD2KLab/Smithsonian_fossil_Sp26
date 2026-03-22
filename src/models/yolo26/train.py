@@ -1,21 +1,23 @@
 """
-YOLO26 training script for palynomorph detection using H5-backed datasets.
+YOLO training script for palynomorph detection using COCO-format datasets.
 
-Train YOLO(26) models on focus-stacked microscopy tiles stored in HDF5 format.
+Expects a COCO export produced by ``export_coco.py``, which writes:
+
+    coco_dir/
+      images/train/   images/val/   images/test/
+      annotations/    instances_train.json  instances_val.json  instances_test.json
+      dataset.yaml
 
 COMMAND (typical usage):
     python -m src.modeling.yolo26.train \\
         --model yolo26s.pt \\
-        --h5_root data/tiles \\
-        --splits_json data/tiles/train_val_test.json \\
+        --coco_dir data/coco_export \\
         --epochs 100 \\
         --imgsz 1024 \\
         --batch 8 \\
         --workers 4 \\
         --project runs/detect \\
         --name yolo26 \\
-        --cache_labels \\
-        --single_cls \\
         --optimizer adamw \\
         --lr0 0.001 \\
         --lrf 0.001
@@ -54,269 +56,52 @@ import argparse
 import os
 from typing import Any
 
-import numpy as np
-
 from ultralytics import YOLO
-from ultralytics.data.build import build_dataloader
-from ultralytics.models.yolo.detect import DetectionTrainer
-from ultralytics.utils import LOGGER, colorstr
-from ultralytics.utils.torch_utils import torch_distributed_zero_first, unwrap_model
 
-from src.modeling.yolo26.dataset import H5YOLODataset
-from src.modeling.yolo26.utils import prepare_h5_yaml
-
-
-# Dataloader Configuration Helpers
-
-def compute_model_stride(trainer: DetectionTrainer) -> int:
-    """
-    Determine the model's maximum stride for the dataset configuration.
-
-    The stride is needed to ensure image sizes are divisible by the model's
-    grid size. Ultralytics YOLO defaults to stride 32 for the largest feature map.
-
-    Args:
-        trainer: DetectionTrainer instance with model attribute.
-
-    Returns:
-        Integer stride value
-    """
-    # Try to get stride from the loaded model
-    if hasattr(trainer, "model") and trainer.model is not None:
-        unwrapped_model = unwrap_model(trainer.model)
-        return max(int(unwrapped_model.stride.max()), 32)
-
-    # Try to get stride from the trainer attribute
-    if hasattr(trainer, "stride") and trainer.stride is not None:
-        return int(trainer.stride)
-
-    # Default YOLO stride
-    return 32
-
-
-def should_disable_shuffle_for_rect_mode(dataset: H5YOLODataset) -> bool:
-    """
-    Check if shuffle should be disabled due to rectangular training.
-
-    Rectangular training uses different batch shapes for efficiency, which
-    is incompatible with random shuffling across the batches.
-
-    Args:
-        dataset: H5YOLODataset instance with potential rect mode enabled.
-
-    Returns:
-        True if shuffle should be disabled, False otherwise.
-    """
-    if not getattr(dataset, "rect", False):
-        return False
-
-    # Check if batch shapes vary
-    try:
-        batch_shapes: np.ndarray = dataset.batch_shapes
-        all_shapes_equal: bool = np.all(batch_shapes == batch_shapes[0])
-        return not all_shapes_equal
-    except (AttributeError, IndexError):
-        return False
-
-
-def create_h5_dataloader(
-    trainer: DetectionTrainer,
-    h5_root: str,
-    splits_json: str,
-    mode: str,
-    batch_size: int,
-    rank: int,
-    cache_labels: bool,
-    single_cls: bool,
-    use_best_plane: bool,
-    best_plane_root: str | None,
-) -> Any:
-    """
-    Create a PyTorch DataLoader with the H5YOLODataset.
-
-    Args:
-        trainer: DetectionTrainer instance for accessing model/arguments.
-        h5_root: Directory containing .h5 tile files.
-        splits_json: Path to train_val_test.json.
-        mode: Dataset mode - "train" or "val".
-        batch_size: Number of samples per batch.
-        rank: Distributed training rank.
-        cache_labels: Whether to cache the label metadata to disk.
-        single_cls: Whether to use single-class detection mode.
-        use_best_plane: Whether to use the best focal plane or the focus-stacked image.
-
-    Returns:
-        PyTorch DataLoader configured for H5 dataset.
-    """
-    # Compute the model stride for proper image sizing
-    model_stride: int = compute_model_stride(trainer)
-
-    # Configure the dataset parameters based on the mode
-    is_training: bool = (mode == "train")
-    augment_enabled: bool = is_training
-    rect_enabled: bool = not is_training  # Rectangular mode for validation
-    padding_factor: float = 0.0 if is_training else 0.5
-
-    # If distributed training, synchronize dataset creation across processes
-    with torch_distributed_zero_first(rank):
-        dataset = H5YOLODataset(
-            h5_root=h5_root,
-            splits_json_path=splits_json,
-            split_name=mode,
-            data=trainer.data,
-            cache_labels=cache_labels,
-            single_cls=single_cls,
-            use_best_plane=use_best_plane,
-            imgsz=trainer.args.imgsz,
-            batch_size=batch_size,
-            augment=augment_enabled,
-            hyp=trainer.args,
-            rect=rect_enabled,
-            stride=model_stride,
-            pad=padding_factor,
-            prefix=colorstr(f"{mode}: "),
-            task="detect",
-            classes=getattr(trainer.args, "classes", None),
-            fraction=trainer.args.fraction if is_training else 1.0,
-            best_plane_root=best_plane_root,
-        )
-
-    # Determine shuffle behavior
-    shuffle_enabled: bool = is_training
-
-    # Disable shuffle if rectangular training requires consistent batch shapes
-    if shuffle_enabled and should_disable_shuffle_for_rect_mode(dataset):
-        LOGGER.warning(
-            "'rect=True' is incompatible with DataLoader shuffle, setting shuffle=False"
-        )
-        shuffle_enabled = False
-
-    worker_count: int = trainer.args.workers if is_training else trainer.args.workers * 2
-    drop_last_batch: bool = getattr(trainer.args, "compile", False) and is_training
-
-    return build_dataloader(
-        dataset,
-        batch=batch_size,
-        workers=worker_count,
-        shuffle=shuffle_enabled,
-        rank=rank,
-        drop_last=drop_last_batch,
-    )
-
-
-class H5DetectionTrainer(DetectionTrainer):
-    """
-    Detection trainer that supports H5-backed datasets.
-
-    Extends Ultralytics DetectionTrainer to intercept the dataloader creation process
-    and use our H5YOLODataset instead of the default YOLODataset.
-    """
-
-    def get_dataloader(
-        self,
-        dataset_path: str,
-        batch_size: int,
-        rank: int,
-        mode: str,
-    ) -> Any:
-        """
-        Create a dataloader for training or validation.
-
-        Args:
-            dataset_path: Path to the dataset (unused for H5 mode).
-            batch_size: Number of samples per batch.
-            rank: Distributed training rank.
-            mode: Dataset mode - "train" or "val".
-
-        Returns:
-            PyTorch DataLoader for the requested mode.
-        """
-        # Validate mode parameter
-        valid_modes: set[str] = {"train", "val"}
-        assert mode in valid_modes, f"Mode must be one of {valid_modes}, not '{mode}'."
-
-        # Read H5 configuration from environment variables.
-        # Needed so it's set in the main process before launching training
-        # so that it's visible to all DDP worker processes.
-        h5_root: str | None = os.environ.get("H5_ROOT")
-        splits_json: str | None = os.environ.get("SPLITS_JSON")
-
-        if not h5_root or not splits_json:
-            raise ValueError(
-                "H5 training requires --h5_root and --splits_json. "
-            )
-
-        # Cache and single-class flags: prefer environment overrides if present,
-        # otherwise fall back to YOLO args defaults.
-        cache_labels_env: str | None = os.environ.get("H5_CACHE_LABELS")
-        single_cls_env: str | None = os.environ.get("H5_SINGLE_CLS")
-        use_best_plane_env: str | None = os.environ.get("H5_USE_BEST_PLANE")
-        best_plane_root_env: str | None = os.environ.get("H5_BEST_PLANE_ROOT")
-
-        cache_labels = cache_labels_env == "1"
-        single_cls = single_cls_env == "1"
-        use_best_plane = use_best_plane_env == "1"
-        best_plane_root = best_plane_root_env or None
-
-        return create_h5_dataloader(
-            trainer=self,
-            h5_root=h5_root,
-            splits_json=splits_json,
-            mode=mode,
-            batch_size=batch_size,
-            rank=rank,
-            cache_labels=cache_labels,
-            single_cls=single_cls,
-            use_best_plane=use_best_plane,
-            best_plane_root=best_plane_root,
-        )
+from src.modeling.yolo26.utils import get_coco_yaml_path
 
 
 def parse_training_arguments() -> argparse.Namespace:
     """
     Parse command-line arguments for YOLO training.
 
-    All dataset input is H5-backed; see module docstring for example command.
-
     Returns:
         Namespace with parsed arguments.
     """
-
     parser = argparse.ArgumentParser(
-        description="Train YOLO(26) model on H5-backed palynomorph tile datasets.",
+        description="Train a YOLO26 model on a COCO-format palynomorph dataset.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example:
-    python -m src.modeling.yolo26.train --model yolo26s.pt --h5_root data/tiles \\
-        --splits_json data/tiles/train_val_test.json --epochs 100 --imgsz 1024 --batch 8 \\
-        --workers 4 --project runs/detect --name yolo26 --cache_labels --single_cls
+    python -m src.modeling.yolo26.train \\
+        --model yolo26s.pt \\
+        --coco_dir data/coco_export \\
+        --epochs 100 \\
+        --imgsz 1024 \\
+        --batch 8 \\
+        --workers 4 \\
+        --project runs/detect \\
+        --name yolo26
         """,
     )
 
+    # Model configuration
     parser.add_argument(
         "--model",
         type=str,
         required=True,
-        help="Path to YOLO model weights (.pt) or model variant name.",
+        help="Path to YOLO model weights or variant name (e.g. 'yolo26s.pt').",
     )
 
+    # Dataset
     parser.add_argument(
-        "--h5_root",
+        "--coco_dir",
         type=str,
         required=True,
-        help="Directory containing .h5 tile files.",
-    )
-    parser.add_argument(
-        "--splits_json",
-        type=str,
-        required=True,
-        help="Path to train_val_test.json.",
-    )
-    parser.add_argument(
-        "--metadata",
-        type=str,
-        required=False,
-        help="Path to tiles metadata.json for class names/counts. Optional.",
+        help=(
+            "Root directory of the COCO export produced by export_coco.py. "
+            "Must contain dataset.yaml, images/, and annotations/."
+        ),
     )
 
     # Training hyperparameters
@@ -330,7 +115,7 @@ Example:
         "--imgsz",
         type=int,
         required=True,
-        help="Input image size. Use 1024 for H5 tiles.",
+        help="Input image size (pixels).",
     )
     parser.add_argument(
         "--batch",
@@ -342,36 +127,35 @@ Example:
         "--workers",
         type=int,
         required=True,
-        help="Number of workers for the dataloader.",
+        help="Number of dataloader worker processes.",
     )
 
-    # Device and output configuration
-    parser.add_argument(
-        "--device",
-        type=str,
-        required=False,
-        help="Device to train on (e.g., '0', '0,1', 'cpu'). Auto-detected if not set.",
-    )
+    # Optimizer
     parser.add_argument(
         "--optimizer",
         type=str,
-        required=False,
         default="adamw",
-        help="Optimizer to use (e.g., 'adam', 'adamw', 'sgd'). Default is 'adamw'.",
+        help="Optimizer (e.g. 'adam', 'adamw', 'sgd'). Default: adamw.",
     )
     parser.add_argument(
         "--lr0",
         type=float,
-        required=False,
         default=0.001,
-        help="Initial learning rate.",
+        help="Initial learning rate. Default: 0.001.",
     )
     parser.add_argument(
         "--lrf",
         type=float,
-        required=False,
         default=0.001,
-        help="Final learning rate factor.",
+        help="Final learning rate factor. Default: 0.001.",
+    )
+
+    # Device and output
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to train on (e.g. '0', '0,1', 'cpu'). Auto-detected if not set.",
     )
     parser.add_argument(
         "--project",
@@ -383,68 +167,46 @@ Example:
         "--name",
         type=str,
         required=True,
-        help="Run name within project directory.",
+        help="Run name within the project directory.",
     )
 
-    # H5-specific options
+    # Optional metadata
     parser.add_argument(
-        "--cache_labels",
-        action="store_true",
-        help="Cache H5 label metadata to disk for faster subsequent runs.",
-    )
-    parser.add_argument(
-        "--no_cache_labels",
-        action="store_false",
-        dest="cache_labels",
-        help="Disable label caching.",
-    )
-    parser.add_argument(
-        "--single_cls",
-        action="store_true",
-        help="Map all palynomorph types to single class (detection-only mode).",
-    )
-    parser.add_argument(
-        "--use_best_plane",
-        action="store_true",
-        help="Use the best focal plane instead of the focus-stacked image.",
-    )
-
-    parser.add_argument(
-        "--best_plane_root",
+        "--metadata",
         type=str,
-        required=False,
         default=None,
-        help=(
-            "Optional directory containing pre-extracted best-plane H5 cache files. "
-            "If set and the cache exists, training reads image data from this cache "
-            "when --use_best_plane is enabled, instead of slicing from the full Z-stack."
-        ),
+        help="Path to tiles metadata.json. Optional — only used for single-class auto-detection.",
     )
 
     return parser.parse_args()
 
 
-def validate_h5_paths(h5_root: str, splits_json: str) -> None:
+def validate_coco_dir(coco_dir: str) -> None:
     """
-    Validate that the H5 dataset paths exist.
+    Validate that the COCO export directory has the expected structure.
 
     Args:
-        h5_root: Directory path to validate.
-        splits_json: File path to validate.
+        coco_dir: Root directory of the COCO export.
 
+    Raises:
+        FileNotFoundError: If coco_dir or dataset.yaml are missing.
     """
-    if not os.path.isdir(h5_root):
-        raise FileNotFoundError(f"h5_root directory not found: {h5_root}")
-    if not os.path.isfile(splits_json):
-        raise FileNotFoundError(f"splits_json file not found: {splits_json}")
+    if not os.path.isdir(coco_dir):
+        raise FileNotFoundError(f"coco_dir not found: {coco_dir}")
+    yaml_path = get_coco_yaml_path(coco_dir)
+    if not os.path.isfile(yaml_path):
+        raise FileNotFoundError(
+            f"dataset.yaml not found at {yaml_path}. "
+            "Run export_coco.py first to generate the COCO dataset."
+        )
 
 
 def auto_detect_single_class_model(model: YOLO) -> bool:
     """
-    Check if a model is configured for single-class detection mode.
+    Check if a model is configured for single-class detection.
 
     Args:
-        model: Loaded YOLO model.
+        model: Loaded YOLO model instance.
 
     Returns:
         True if model has nc=1 (single class), False otherwise.
@@ -471,20 +233,23 @@ def build_training_overrides(
     lrf: float,
 ) -> dict[str, Any]:
     """
-    Build the overrides dictionary for YOLO training (H5 dataset only).
+    Build the overrides dictionary for YOLO training.
 
     Args:
-        yaml_path: Path to the H5 dataset YAML.
+        yaml_path: Path to the COCO dataset.yaml.
         epochs: Number of training epochs.
         imgsz: Input image size.
-        batch: Number of samples per batch.
-        workers: Number of workers for the dataloader.
+        batch: Batch size.
+        workers: Number of dataloader workers.
         project: Project output directory.
         name: Run name.
-        device: Device string or None for auto-detection.
+        device: Device string, or None for auto-detection.
+        optimizer: Optimizer name.
+        lr0: Initial learning rate.
+        lrf: Final learning rate factor.
 
     Returns:
-        Dictionary of training overrides.
+        Dictionary of training overrides for model.train().
     """
     overrides: dict[str, Any] = {
         "data": yaml_path,
@@ -505,34 +270,25 @@ def build_training_overrides(
     return overrides
 
 
-def train_with_h5_dataset(model: YOLO, args: argparse.Namespace) -> None:
+def main() -> None:
     """
-    Training using the H5-backed dataset.
+    Main entry point for YOLO26 training.
 
-    Args:
-        model: Loaded YOLO model.
-        args: Parsed command-line arguments.
+    Validates the COCO export directory, loads the model, and starts training
+    using the dataset.yaml generated by export_coco.py.
     """
-    # Validate that the paths exist
-    validate_h5_paths(args.h5_root, args.splits_json)
+    args = parse_training_arguments()
 
-    # Makes H5 configuration available to all DDP worker processes.
-    os.environ["H5_ROOT"] = args.h5_root
-    os.environ["SPLITS_JSON"] = args.splits_json
-    os.environ["H5_CACHE_LABELS"] = "1" if args.cache_labels else "0"
-    os.environ["H5_SINGLE_CLS"] = "1" if args.single_cls else "0"
-    os.environ["H5_USE_BEST_PLANE"] = "1" if args.use_best_plane else "0"
-    os.environ["H5_BEST_PLANE_ROOT"] = args.best_plane_root or ""
+    validate_coco_dir(args.coco_dir)
 
-    # Generate the YAML configuration pointing to the H5 data
-    yaml_path: str = prepare_h5_yaml(
-        h5_root=args.h5_root,
-        metadata_path=args.metadata,
-        single_cls=args.single_cls,
-    )
+    model: YOLO = YOLO(args.model)
 
-    # Build the training configuration
-    overrides: dict[str, Any] = build_training_overrides(
+    if auto_detect_single_class_model(model):
+        print("Auto-detected single-class model (nc=1).")
+
+    yaml_path = get_coco_yaml_path(args.coco_dir)
+
+    overrides = build_training_overrides(
         yaml_path=yaml_path,
         epochs=args.epochs,
         imgsz=args.imgsz,
@@ -546,29 +302,7 @@ def train_with_h5_dataset(model: YOLO, args: argparse.Namespace) -> None:
         lrf=args.lrf,
     )
 
-    model.train(**overrides, trainer=H5DetectionTrainer)
-
-
-def main() -> None:
-    """
-    Main entry point for YOLO26 training.
-
-    Parses arguments, loads model, and dispatches to appropriate training
-    function based on dataset configuration.
-    """
-    # Parse command-line arguments
-    args: argparse.Namespace = parse_training_arguments()
-
-    # Load YOLO model from weights or variant name
-    model: YOLO = YOLO(args.model)
-
-    # Auto-detect single_cls for models trained on single class
-    if not args.single_cls and not args.metadata:
-        if auto_detect_single_class_model(model):
-            print("Auto-detected single-class model (nc=1). Enabling --single_cls.")
-            args.single_cls = True
-
-    train_with_h5_dataset(model, args)
+    model.train(**overrides)
 
 
 if __name__ == "__main__":
