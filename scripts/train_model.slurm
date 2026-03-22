@@ -22,6 +22,7 @@ SCRATCH_ROOT="${SHARED_SCRATCH}/$USER"
 VENV_DIR="${SCRATCH_ROOT}/smithsonian_venv"
 JOB_OUTPUT_DIR="$SCRATCH_ROOT/yolo26/outputs"
 SPLITS_JSON="$SCRATCH_ROOT/processed/train_val_test.json"
+BEST_PLANE_ROOT="$SCRATCH_ROOT/processed/tiles_best_plane"
 
 unset PYTHONHOME
 unset PYTHONPATH
@@ -47,6 +48,7 @@ python -m src.modeling.yolo26.train \
   --model yolo26l.pt \
   --h5_root "$SCRATCH_ROOT/processed/tiles" \
   --splits_json "$SPLITS_JSON" \
+  --best_plane_root "$BEST_PLANE_ROOT" \
   --epochs 200 \
   --imgsz 1024 \
   --batch 16 \
@@ -54,7 +56,7 @@ python -m src.modeling.yolo26.train \
   --project "$JOB_OUTPUT_DIR" \
   --name yolo26l_palynomorphs \
   --cache_labels \
-  --single_cls
+  --single_cls \
   --optimizer adamw \
   --lr0 0.001 \
   --lrf 0.001
