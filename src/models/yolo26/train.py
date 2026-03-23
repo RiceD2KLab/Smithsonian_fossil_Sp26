@@ -1,53 +1,12 @@
 """
 YOLO training script for palynomorph detection using COCO-format datasets.
 
-Expects a COCO export produced by ``export_coco.py``, which writes:
+Expects a COCO export produced by export_coco.py, which writes:
 
     coco_dir/
       images/train/   images/val/   images/test/
       annotations/    instances_train.json  instances_val.json  instances_test.json
       dataset.yaml
-
-COMMAND (typical usage):
-    python -m src.modeling.yolo26.train \\
-        --model yolo26s.pt \\
-        --coco_dir data/coco_export \\
-        --epochs 100 \\
-        --imgsz 1024 \\
-        --batch 8 \\
-        --workers 4 \\
-        --project runs/detect \\
-        --name yolo26 \\
-        --optimizer adamw \\
-        --lr0 0.001 \\
-        --lrf 0.001
-
-YOLO26/ULTRALYTICS ASSUMPTIONS:
-    Loss Function:
-        - Detection uses composite loss: box_loss + cls_loss + dfl_loss
-        - box_loss: CIoU (Complete IoU) for bounding box regression
-        - cls_loss: Binary Cross-Entropy for class predictions
-        - dfl_loss: Distribution Focal Loss for box refinement
-
-    Data Augmentation (when augment=True, i.e., training mode):
-        - Mosaic: 4 images combined into one (prob=1.0, disabled last 10 epochs)
-        - MixUp: Blend two images (prob=0.0 by default)
-        - HSV shifts: hue=0.015, saturation=0.7, value=0.4
-        - Geometric: scale=0.5, translate=0.1, rotation=0.0, shear=0.0
-        - Flips: horizontal=0.5, vertical=0.0
-        - Copy-paste: disabled by default
-
-    Optimizer:
-        - AdamW with default parameters (default)
-        - Initial LR=0.01, final LR=0.01 (cosine annealing)
-        - Weight decay=0.0005
-        - Warmup: 3 epochs with bias_lr=0.1, momentum=0.8
-
-    Model Architecture (yolo26s.pt):
-        - Backbone: CSPDarknet53 variant
-        - Neck: PANet (Path Aggregation Network)
-        - Head: Decoupled detection head
-        - Stride: [8, 16, 32] (3 detection scales)
 """
 
 from __future__ import annotations
@@ -58,8 +17,7 @@ from typing import Any
 
 from ultralytics import YOLO
 
-from src.modeling.yolo26.utils import get_coco_yaml_path
-
+from src.models.yolo26.utils import convert_coco_labels_to_yolo, get_coco_yaml_path
 
 def parse_training_arguments() -> argparse.Namespace:
     """
@@ -70,22 +28,8 @@ def parse_training_arguments() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description="Train a YOLO26 model on a COCO-format palynomorph dataset.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Example:
-    python -m src.modeling.yolo26.train \\
-        --model yolo26s.pt \\
-        --coco_dir data/coco_export \\
-        --epochs 100 \\
-        --imgsz 1024 \\
-        --batch 8 \\
-        --workers 4 \\
-        --project runs/detect \\
-        --name yolo26
-        """,
     )
 
-    # Model configuration
     parser.add_argument(
         "--model",
         type=str,
@@ -93,7 +37,6 @@ Example:
         help="Path to YOLO model weights or variant name (e.g. 'yolo26s.pt').",
     )
 
-    # Dataset
     parser.add_argument(
         "--coco_dir",
         type=str,
@@ -130,24 +73,29 @@ Example:
         help="Number of dataloader worker processes.",
     )
 
-    # Optimizer
     parser.add_argument(
         "--optimizer",
         type=str,
-        default="adamw",
-        help="Optimizer (e.g. 'adam', 'adamw', 'sgd'). Default: adamw.",
+        required=True,
+        help="Optimizer (e.g. 'adam', 'adamw', 'sgd').",
     )
     parser.add_argument(
         "--lr0",
         type=float,
-        default=0.001,
-        help="Initial learning rate. Default: 0.001.",
+        required=True,
+        help="Initial learning rate.",
     )
     parser.add_argument(
         "--lrf",
         type=float,
-        default=0.001,
-        help="Final learning rate factor. Default: 0.001.",
+        required=True,
+        help="Final learning rate factor.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        required=True,
+        help="Number of epochs to wait for improvement before stopping.",
     )
 
     # Device and output
@@ -170,26 +118,12 @@ Example:
         help="Run name within the project directory.",
     )
 
-    # Optional metadata
-    parser.add_argument(
-        "--metadata",
-        type=str,
-        default=None,
-        help="Path to tiles metadata.json. Optional — only used for single-class auto-detection.",
-    )
-
     return parser.parse_args()
 
 
 def validate_coco_dir(coco_dir: str) -> None:
     """
     Validate that the COCO export directory has the expected structure.
-
-    Args:
-        coco_dir: Root directory of the COCO export.
-
-    Raises:
-        FileNotFoundError: If coco_dir or dataset.yaml are missing.
     """
     if not os.path.isdir(coco_dir):
         raise FileNotFoundError(f"coco_dir not found: {coco_dir}")
@@ -199,24 +133,6 @@ def validate_coco_dir(coco_dir: str) -> None:
             f"dataset.yaml not found at {yaml_path}. "
             "Run export_coco.py first to generate the COCO dataset."
         )
-
-
-def auto_detect_single_class_model(model: YOLO) -> bool:
-    """
-    Check if a model is configured for single-class detection.
-
-    Args:
-        model: Loaded YOLO model instance.
-
-    Returns:
-        True if model has nc=1 (single class), False otherwise.
-    """
-    try:
-        if hasattr(model.model, "nc") and model.model.nc == 1:
-            return True
-    except AttributeError:
-        pass
-    return False
 
 
 def build_training_overrides(
@@ -231,6 +147,7 @@ def build_training_overrides(
     optimizer: str,
     lr0: float,
     lrf: float,
+    patience: int,
 ) -> dict[str, Any]:
     """
     Build the overrides dictionary for YOLO training.
@@ -262,6 +179,7 @@ def build_training_overrides(
         "optimizer": optimizer,
         "lr0": lr0,
         "lrf": lrf,
+        "patience": patience,
     }
 
     if device is not None:
@@ -273,19 +191,13 @@ def build_training_overrides(
 def main() -> None:
     """
     Main entry point for YOLO26 training.
-
-    Validates the COCO export directory, loads the model, and starts training
-    using the dataset.yaml generated by export_coco.py.
     """
-    args = parse_training_arguments()
 
+    args = parse_training_arguments()
     validate_coco_dir(args.coco_dir)
+    convert_coco_labels_to_yolo(args.coco_dir)
 
     model: YOLO = YOLO(args.model)
-
-    if auto_detect_single_class_model(model):
-        print("Auto-detected single-class model (nc=1).")
-
     yaml_path = get_coco_yaml_path(args.coco_dir)
 
     overrides = build_training_overrides(
@@ -300,6 +212,7 @@ def main() -> None:
         optimizer=args.optimizer,
         lr0=args.lr0,
         lrf=args.lrf,
+        patience=args.patience,
     )
 
     model.train(**overrides)

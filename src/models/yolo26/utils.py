@@ -1,28 +1,10 @@
 """
-Configuration helpers for YOLO training and validation with COCO-format datasets.
-
-The COCO dataset structure is produced by ``export_coco.py``:
-
-    coco_dir/
-      images/
-        train/
-        val/
-        test/
-      annotations/
-        instances_train.json
-        instances_val.json
-        instances_test.json
-      dataset.yaml
-
-Typical usage:
-    from src.modeling.yolo26.utils import get_coco_yaml_path, get_coco_annotations_path
-
-    yaml_path  = get_coco_yaml_path("data/coco_export")
-    ann_path   = get_coco_annotations_path("data/coco_export", "val")
+Helpers for YOLO in accessing COCO format dataset from export_coco.py.
 """
 
 from __future__ import annotations
 
+import json
 import os
 
 
@@ -65,3 +47,81 @@ def get_coco_images_dir(coco_dir: str, split: str) -> str:
         Absolute path to ``images/<split>/``.
     """
     return os.path.join(os.path.abspath(coco_dir), "images", split)
+
+
+def convert_coco_labels_to_yolo(coco_dir: str) -> None:
+    """
+    Convert COCO JSON annotations to YOLO txt labels.
+
+    For each split (train/val/test), reads annotations/instances_<split>.json
+    and writes labels/<split>/<image_stem>.txt with one line per annotation:
+
+        class_id cx cy w h
+
+    where cx, cy, w, h are normalized center-XYWH in [0, 1].
+    Images with no annotations get an empty txt file so YOLO treats them as
+    valid background images rather than missing labels.
+
+    The conversion is skipped for a split if labels/<split>/ already
+    contains the same number of .txt files as images in the JSON.
+
+    Args:
+        coco_dir: Root directory of the COCO export produced by export_coco.py.
+    """
+    coco_dir = os.path.abspath(coco_dir)
+
+    for split in ("train", "val", "test"):
+        ann_path = os.path.join(coco_dir, "annotations", f"instances_{split}.json")
+        if not os.path.isfile(ann_path):
+            continue
+
+        with open(ann_path) as f:
+            coco = json.load(f)
+
+        images = coco.get("images", [])
+        if not images:
+            continue
+
+        labels_dir = os.path.join(coco_dir, "labels", split)
+
+        # skip if .txt count already matches image count
+        if os.path.isdir(labels_dir):
+            existing = [name for name in os.listdir(labels_dir) if name.endswith(".txt")]
+            if len(existing) == len(images):
+                continue
+
+        os.makedirs(labels_dir, exist_ok=True)
+
+        # Build image_id -> (file_name, width, height)
+        id_to_image: dict[int, tuple[str, int, int]] = {
+            img["id"]: (img["file_name"], img["width"], img["height"])
+            for img in images
+        }
+
+        # Group annotations by image_id
+        anns_by_image: dict[int, list] = {img["id"]: [] for img in images}
+        for ann in coco.get("annotations", []):
+            img_id = ann["image_id"]
+            if img_id in anns_by_image:
+                anns_by_image[img_id].append(ann)
+
+        written = 0
+        for img_id, (file_name, img_w, img_h) in id_to_image.items():
+            stem = os.path.splitext(os.path.basename(file_name))[0]
+            txt_path = os.path.join(labels_dir, f"{stem}.txt")
+
+            lines = []
+            for ann in anns_by_image.get(img_id, []):
+                x, y, w, h = ann["bbox"]
+                class_id = ann["category_id"]
+                cx = (x + w / 2) / img_w
+                cy = (y + h / 2) / img_h
+                nw = w / img_w
+                nh = h / img_h
+                lines.append(f"{class_id} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
+
+            with open(txt_path, "w") as f:
+                f.write("\n".join(lines))
+            written += 1
+
+        print(f"Wrote {written} label files to labels/{split}/")
