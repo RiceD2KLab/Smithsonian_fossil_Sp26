@@ -1,0 +1,208 @@
+"""
+YOLO training script for palynomorph detection using COCO-format datasets.
+
+Expects a COCO export produced by export_coco.py, which writes:
+
+    coco_dir/
+      images/train/   images/val/   images/test/
+      annotations/    instances_train.json  instances_val.json  instances_test.json
+      dataset.yaml
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from typing import Any
+
+from ultralytics import YOLO
+
+from src.models.yolo26.utils import convert_coco_labels_to_yolo, get_coco_yaml_path, validate_coco_dir
+
+def parse_training_arguments() -> argparse.Namespace:
+    """
+    Parse command-line arguments for YOLO training.
+
+    Returns:
+        Namespace with parsed arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="Train a YOLO26 model on a COCO-format palynomorph dataset.",
+    )
+
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        help="Path to YOLO model weights or variant name (e.g. 'yolo26s.pt').",
+    )
+
+    parser.add_argument(
+        "--coco_dir",
+        type=str,
+        required=True,
+        help=(
+            "Root directory of the COCO export produced by export_coco.py. "
+            "Must contain dataset.yaml, images/, and annotations/."
+        ),
+    )
+
+    # Training hyperparameters
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        required=True,
+        help="Number of training epochs.",
+    )
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        required=True,
+        help="Input image size (pixels).",
+    )
+    parser.add_argument(
+        "--batch",
+        type=int,
+        required=True,
+        help="Number of samples per batch.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        required=True,
+        help="Number of dataloader worker processes.",
+    )
+
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        required=True,
+        help="Optimizer (e.g. 'adam', 'adamw', 'sgd').",
+    )
+    parser.add_argument(
+        "--lr0",
+        type=float,
+        required=True,
+        help="Initial learning rate.",
+    )
+    parser.add_argument(
+        "--lrf",
+        type=float,
+        required=True,
+        help="Final learning rate factor.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        required=True,
+        help="Number of epochs to wait for improvement before stopping.",
+    )
+
+    # Device and output
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to train on (e.g. '0', '0,1', 'cpu'). Auto-detected if not set.",
+    )
+    parser.add_argument(
+        "--project",
+        type=str,
+        required=True,
+        help="Project directory for saving runs.",
+    )
+    parser.add_argument(
+        "--name",
+        type=str,
+        required=True,
+        help="Run name within the project directory.",
+    )
+
+    return parser.parse_args()
+
+
+def build_training_overrides(
+    yaml_path: str,
+    epochs: int,
+    imgsz: int,
+    batch: int,
+    workers: int,
+    project: str,
+    name: str,
+    device: str | None,
+    optimizer: str,
+    lr0: float,
+    lrf: float,
+    patience: int,
+) -> dict[str, Any]:
+    """
+    Build the overrides dictionary for YOLO training.
+
+    Args:
+        yaml_path: Path to the COCO dataset.yaml.
+        epochs: Number of training epochs.
+        imgsz: Input image size.
+        batch: Batch size.
+        workers: Number of dataloader workers.
+        project: Project output directory.
+        name: Run name.
+        device: Device string, or None for auto-detection.
+        optimizer: Optimizer name.
+        lr0: Initial learning rate.
+        lrf: Final learning rate factor.
+
+    Returns:
+        Dictionary of training overrides for model.train().
+    """
+    overrides: dict[str, Any] = {
+        "data": yaml_path,
+        "epochs": epochs,
+        "imgsz": imgsz,
+        "batch": batch,
+        "workers": workers,
+        "project": project,
+        "name": name,
+        "optimizer": optimizer,
+        "lr0": lr0,
+        "lrf": lrf,
+        "patience": patience,
+    }
+
+    if device is not None:
+        overrides["device"] = device
+
+    return overrides
+
+
+def main() -> None:
+    """
+    Main entry point for YOLO26 training.
+    """
+
+    args = parse_training_arguments()
+    validate_coco_dir(args.coco_dir)
+    convert_coco_labels_to_yolo(args.coco_dir)
+
+    model: YOLO = YOLO(args.model)
+    yaml_path = get_coco_yaml_path(args.coco_dir)
+
+    overrides = build_training_overrides(
+        yaml_path=yaml_path,
+        epochs=args.epochs,
+        imgsz=args.imgsz,
+        batch=args.batch,
+        workers=args.workers,
+        project=args.project,
+        name=args.name,
+        device=args.device,
+        optimizer=args.optimizer,
+        lr0=args.lr0,
+        lrf=args.lrf,
+        patience=args.patience,
+    )
+
+    model.train(**overrides)
+
+
+if __name__ == "__main__":
+    main()
