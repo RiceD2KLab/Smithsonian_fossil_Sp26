@@ -125,3 +125,16 @@ def convert_coco_labels_to_yolo(coco_dir: str) -> None:
             written += 1
 
         print(f"Wrote {written} label files to labels/{split}/")
+
+def validate_coco_dir(coco_dir: str) -> None:
+    """
+    Validate that the COCO export directory has the expected structure.
+    """
+    if not os.path.isdir(coco_dir):
+        raise FileNotFoundError(f"coco_dir not found: {coco_dir}")
+    yaml_path = get_coco_yaml_path(coco_dir)
+    if not os.path.isfile(yaml_path):
+        raise FileNotFoundError(
+            f"dataset.yaml not found at {yaml_path}. "
+            "Run export_coco.py first to generate the COCO dataset."
+        )

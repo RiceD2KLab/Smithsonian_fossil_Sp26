@@ -17,7 +17,7 @@ from typing import Any
 
 from ultralytics import YOLO
 
-from src.models.yolo26.utils import convert_coco_labels_to_yolo, get_coco_yaml_path
+from src.models.yolo26.utils import convert_coco_labels_to_yolo, get_coco_yaml_path, validate_coco_dir
 
 def parse_training_arguments() -> argparse.Namespace:
     """
@@ -119,20 +119,6 @@ def parse_training_arguments() -> argparse.Namespace:
     )
 
     return parser.parse_args()
-
-
-def validate_coco_dir(coco_dir: str) -> None:
-    """
-    Validate that the COCO export directory has the expected structure.
-    """
-    if not os.path.isdir(coco_dir):
-        raise FileNotFoundError(f"coco_dir not found: {coco_dir}")
-    yaml_path = get_coco_yaml_path(coco_dir)
-    if not os.path.isfile(yaml_path):
-        raise FileNotFoundError(
-            f"dataset.yaml not found at {yaml_path}. "
-            "Run export_coco.py first to generate the COCO dataset."
-        )
 
 
 def build_training_overrides(

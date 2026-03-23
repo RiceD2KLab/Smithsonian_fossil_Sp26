@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=palynomorph-yolo26-training
+#SBATCH --job-name=yolo26-eval
 #SBATCH --account=commons
-#SBATCH --partition=commons
+#SBATCH --partition=scavenge
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
+#SBATCH --time=01:00:00
 #SBATCH --export=ALL
 #SBATCH --output=slurm-yolo26-%j.out
 #SBATCH --error=slurm-yolo26-%j.err
@@ -19,7 +19,7 @@ SCRATCH_ROOT="${SHARED_SCRATCH}/$USER"
 VENV_DIR="${SCRATCH_ROOT}/miniconda_venv"
 JOB_OUTPUT_DIR="$SCRATCH_ROOT/yolo26/outputs"
 COCO_DIR="$SCRATCH_ROOT/processed/coco_focus_stack"
-RUN_NAME="yolo26_train_run$SLURM_JOB_ID"
+RUN_NAME="yolo26_eval_run$SLURM_JOB_ID"
 
 unset PYTHONHOME
 unset PYTHONPATH
@@ -42,19 +42,16 @@ fi
 
 cd "$SLURM_SUBMIT_DIR"
 
-python -m src.models.yolo26.train \
-  --model yolo26l.pt \
-  --coco_dir $COCO_DIR \
-  --epochs 200 \
+python -m src.models.yolo26.evaluate \
+  --model "$JOB_OUTPUT_DIR/yolo26_train_run/weights/best.pt" \
+  --coco_dir "$COCO_DIR" \
+  --split test \
   --imgsz 1024 \
   --batch 16 \
   --workers 4 \
   --project "$JOB_OUTPUT_DIR" \
   --name $RUN_NAME \
-  --optimizer adamw \
-  --lr0 0.001 \
-  --lrf 0.001 \
-  --patience 10
+  --plots \
 
 SAVE_DIR="$HOME/yolo26/outputs"
 mkdir -p "$SAVE_DIR"
