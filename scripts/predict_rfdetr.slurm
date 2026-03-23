@@ -43,9 +43,9 @@ cd "$SLURM_SUBMIT_DIR"
 
 # predictions only
 # python -m src.models.rfdetr.predict \
-#     --weights "$JOB_OUTPUT_DIR/rfdetr_focus_stack/checkpoint_best_ema.pth" \
+#     --weights "$JOB_OUTPUT_DIR/rfdetr_train_run/checkpoint_best_ema.pth" \
 #     --image_dir "$COCO_DIR/images/test/" \
-#     --out_dir "$JOB_OUTPUT_DIR/predictions/" \
+#     --out_dir "$JOB_OUTPUT_DIR/rfdetr_predictions/" \
 #     --conf_thresh 0.5 \
 #     --resolution 1008 \
 #     --iou_thresh 0.5 \
@@ -53,9 +53,9 @@ cd "$SLURM_SUBMIT_DIR"
 
 # predictions + GT overlay + FP/FN breakdown
 python -m src.models.rfdetr.predict \
-    --weights "$JOB_OUTPUT_DIR/rfdetr_focus_stack/checkpoint_best_ema.pth" \
+    --weights "$JOB_OUTPUT_DIR/rfdetr_train_run/checkpoint_best_ema.pth" \
     --image_dir "$COCO_DIR/images/test/" \
-    --out_dir "$JOB_OUTPUT_DIR/predictions/" \
+    --out_dir "$JOB_OUTPUT_DIR/rfdetr_predictions/" \
     --coco_ann "$COCO_DIR/annotations/instances_test.json" \
     --show_gt \
     --show_fp_fn \

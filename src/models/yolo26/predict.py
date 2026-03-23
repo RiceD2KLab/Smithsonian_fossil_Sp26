@@ -1,34 +1,34 @@
 """
-RF-DETR inference and visualisation on image tiles.
+YOLO inference and visualisation on image tiles.
 
-Loads a trained RF-DETR checkpoint, runs inference on a flat directory of
+Loads a trained YOLO checkpoint, runs inference on a flat directory of
 images, and saves annotated outputs.  Ground-truth, FP, and FN modes are
 available when a COCO annotation file is provided.
 
 COMMAND (typical usage):
 
   # predictions only
-  python -m src.models.rfdetr.predict \\
-      --weights runs/rfdetr/best.pt \\
+  python -m src.models.yolo26.predict \\
+      --weights runs/detect/best.pt \\
       --image_dir data/coco_export/images/test/ \\
-      --out_dir runs/rfdetr/predictions/
-      --conf_thresh 0.5 \\ (confidence threshold for predictions)
-      --resolution 1008 \\ (must be divisible by 56..rfdetr backbone req)
-      --iou_thresh 0.5 \\ (for FP/FN matching)
-      --max_images 0 \\ (0 is no limit)
+      --out_dir runs/detect/predictions/ \\
+      --conf_thresh 0.5 \\
+      --imgsz 640 \\
+      --iou_thresh 0.5 \\
+      --max_images 0
 
   # predictions + GT overlay + FP/FN breakdown
-  python -m src.models.rfdetr.predict \\
-      --weights runs/rfdetr/best.pt \\
+  python -m src.models.yolo26.predict \\
+      --weights runs/detect/best.pt \\
       --image_dir data/coco_export/images/test/ \\
-      --out_dir runs/rfdetr/predictions/ \\
+      --out_dir runs/detect/predictions/ \\
       --coco_ann data/coco_export/annotations/instances_test.json \\
       --show_gt \\
       --show_fp_fn \\
-      --conf_thresh 0.5 \\ (confidence threshold for predictions)
-      --resolution 1008 \\ (must be divisible by 56..rfdetr backbone req)
-      --iou_thresh 0.5 \\ (for FP/FN matching)
-      --max_images 0 \\ (0 is no limit)
+      --conf_thresh 0.5 \\
+      --imgsz 640 \\
+      --iou_thresh 0.5 \\
+      --max_images 0
 """
 
 from __future__ import annotations
@@ -39,18 +39,18 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from ultralytics import YOLO
 
-from src.models.rfdetr.train import _MODEL_CLASSES
 from src.models.utils import greedy_match, xywh_to_xyxy, draw_box
 
 # export_coco.py only exports JPEG and PNG images
-_IMG_EXTENSIONS = {".jpeg", ".png"}
+_IMG_EXTENSIONS = {".jpeg", ".jpg", ".png"}
 
 # BGR colours
-_COL_PRED = (0, 200, 0)       # green
-_COL_GT   = (200, 0, 0)       # blue
-_COL_FP   = (0, 0, 220)       # red
-_COL_FN   = (0, 140, 255)     # orange
+_COL_PRED = (0, 200, 0)    # green
+_COL_GT   = (200, 0, 0)    # blue
+_COL_FP   = (0, 0, 220)    # red
+_COL_FN   = (0, 140, 255)  # orange
 
 
 def _load_coco_gt(ann_file: str) -> tuple[dict[str, list[dict]], dict[int, str]]:
@@ -74,7 +74,7 @@ def _gt_arrays(
     gt_anns: list[dict],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (xyxy boxes, class-zero array) for a list of COCO annotations.
-    
+
     xyxy boxes are in the format [x1, y1, x2, y2]
     class-zero array is an array of zeros with the same length as the number of annotations
     """
@@ -85,19 +85,19 @@ def _gt_arrays(
 
 
 def predict(args: argparse.Namespace) -> None:
-    """Run RF-DETR inference and save predictions, GT, FP, and FN images."""
+    """Run YOLO inference and save predictions, GT, FP, and FN images."""
     if (args.show_gt or args.show_fp_fn) and not args.coco_ann:
         raise ValueError("--show_gt and --show_fp_fn require --coco_ann.")
 
-    image_dir = Path(args.image_dir) # input images directory
+    image_dir = Path(args.image_dir)
     if not image_dir.is_dir():
         raise FileNotFoundError(f"image_dir not found: {image_dir}")
 
-    out_dir = Path(args.out_dir) # output directory
-    pred_dir = out_dir / "predictions" # predictions directory
+    out_dir = Path(args.out_dir)
+    pred_dir = out_dir / "predictions"
     pred_dir.mkdir(parents=True, exist_ok=True)
 
-    gt_dir = fp_dir = fn_dir = None # ground truth, FP, and FN directories
+    gt_dir = fp_dir = fn_dir = None
     if args.show_gt:
         gt_dir = out_dir / "ground_truth"
         gt_dir.mkdir(parents=True, exist_ok=True)
@@ -110,19 +110,13 @@ def predict(args: argparse.Namespace) -> None:
     # Load ground truth from COCO annotation JSON
     gt_by_filename: dict[str, list[dict]] = {}
     if args.coco_ann:
-        if not Path(args.coco_ann).exists(): # check if COCO annotation JSON exists
+        if not Path(args.coco_ann).exists():
             raise FileNotFoundError(f"COCO annotation JSON not found: {args.coco_ann}")
         gt_by_filename, _ = _load_coco_gt(args.coco_ann)
 
     # Load model from checkpoint
-    print(f"Loading {args.model} model from {args.weights} checkpoint …")
-    model = _MODEL_CLASSES[args.model](
-        pretrain_weights=args.weights,
-        num_classes=1,
-        resolution=args.resolution,
-    )
-    
-    model.optimize_for_inference()
+    print(f"Loading YOLO model from {args.weights} …")
+    model = YOLO(args.weights)
 
     # Collect images from input directory
     img_paths = sorted(
@@ -136,7 +130,7 @@ def predict(args: argparse.Namespace) -> None:
         print(f"No images found in {image_dir}")
         return
 
-    print(f"Running RF-DETR inference on {len(img_paths)} images …")
+    print(f"Running YOLO inference on {len(img_paths)} images …")
 
     total_pred = total_gt = total_tp = total_fp_count = total_fn_count = 0
     pred_saved = gt_saved = fp_saved = fn_saved = 0
@@ -149,12 +143,18 @@ def predict(args: argparse.Namespace) -> None:
             print(f"Warning: could not read image {img_path}")
             continue
 
-        detections = model.predict(str(img_path), threshold=args.conf_thresh)
+        results = model.predict(
+            source=str(img_path),
+            conf=args.conf_thresh,
+            imgsz=args.imgsz,
+            verbose=False,
+        )
 
-        pred_boxes = detections.xyxy  # (N, 4) float32 boxes in xyxy format
-        pred_conf  = detections.confidence if detections.confidence is not None else np.array([])
-
-        if pred_boxes is None or len(pred_boxes) == 0:
+        boxes_tensor = results[0].boxes
+        if boxes_tensor is not None and len(boxes_tensor) > 0:
+            pred_boxes = boxes_tensor.xyxy.cpu().numpy().astype(np.float32)
+            pred_conf  = boxes_tensor.conf.cpu().numpy().astype(np.float32)
+        else:
             pred_boxes = np.zeros((0, 4), dtype=np.float32)
             pred_conf  = np.array([], dtype=np.float32)
 
@@ -163,7 +163,7 @@ def predict(args: argparse.Namespace) -> None:
 
         # Save predictions
         img_pred = img_bgr.copy()
-        for i, (box, conf) in enumerate(zip(pred_boxes, pred_conf)):
+        for box, conf in zip(pred_boxes, pred_conf):
             draw_box(img_pred, box.tolist(), f"{float(conf):.2f}", _COL_PRED)
         cv2.imwrite(str(pred_dir / file_name), img_pred)
         pred_saved += 1
@@ -221,7 +221,7 @@ def predict(args: argparse.Namespace) -> None:
                 fn_saved += 1
 
     print()
-    print("==== RF-DETR prediction summary ====")
+    print("==== YOLO prediction summary ====")
     print(f"Images processed:    {pred_saved}")
     print(f"Total predictions:   {total_pred} (conf >= {args.conf_thresh})")
     if args.coco_ann:
@@ -241,30 +241,28 @@ def predict(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="RF-DETR inference and visualisation on image tiles.",
+        description="YOLO inference and visualisation on image tiles.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--weights", required=True,
-                   help="Path to trained RF-DETR checkpoint (.pt).")
+                   help="Path to trained YOLO checkpoint (.pt).")
     p.add_argument("--image_dir", required=True,
                    help="Flat directory of input images.")
     p.add_argument("--out_dir", required=True,
                    help="Root output directory.")
-    p.add_argument("--model", choices=list(_MODEL_CLASSES.keys()), default="base",
-                   help="RF-DETR model variant (default: base).")
-    p.add_argument("--conf_thresh", type=float, required=True,
-                   help="Confidence threshold.")
-    p.add_argument("--resolution", type=int, required=True,
-                   help="Inference resolution in pixels.")
+    p.add_argument("--conf_thresh", type=float, default=0.5,
+                   help="Confidence threshold (default: 0.5).")
+    p.add_argument("--imgsz", type=int, default=640,
+                   help="Inference image size in pixels (default: 640).")
     p.add_argument("--coco_ann",
                    help="Optional COCO annotation JSON. Required for --show_gt / --show_fp_fn.")
     p.add_argument("--show_gt", action="store_true",
                    help="Save separate images with ground-truth boxes (requires --coco_ann).")
     p.add_argument("--show_fp_fn", action="store_true",
                    help="Save FP and FN images (requires --coco_ann).")
-    p.add_argument("--iou_thresh", type=float, required=True,
-                   help="IoU threshold for FP/FN matching.")
-    p.add_argument("--max_images", type=int, required=True,
+    p.add_argument("--iou_thresh", type=float, default=0.5,
+                   help="IoU threshold for FP/FN matching (default: 0.5).")
+    p.add_argument("--max_images", type=int, default=0,
                    help="Limit number of images processed (0 = no limit).")
     return p.parse_args()
 
