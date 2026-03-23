@@ -41,7 +41,7 @@ import cv2
 import numpy as np
 
 from src.models.rfdetr.train import _MODEL_CLASSES
-from src.models.shared.fp_fn_utils import greedy_match, xywh_to_xyxy
+from src.models.fp_fn_utils import greedy_match, xywh_to_xyxy
 
 # export_coco.py only exports JPEG and PNG images
 _IMG_EXTENSIONS = {".jpeg", ".png"}
