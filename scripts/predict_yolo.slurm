@@ -43,7 +43,7 @@ export PYTHONPATH="$REPO_DIR:${PYTHONPATH:-}"
 
 cd "$SLURM_SUBMIT_DIR"
 
-python -m src.modeling.yolo26.val \
+python -m src.models.yolo26.val \
   --model "$JOB_OUTPUT_DIR/yolo26l_palynomorphs/weights/best.pt" \
   --h5_root "$SCRATCH_ROOT/processed/tiles" \
   --splits_json "$SPLITS_JSON" \
