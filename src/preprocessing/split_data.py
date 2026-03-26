@@ -3,6 +3,14 @@ import json
 import random
 from src.exploration.h5_utils import list_h5_paths
 
+"""
+This script splits the dataset into training, validation, and test sets. 
+It reads all processed h5 files from the specified directory, extracts 
+the image names, and randomly shuffles them before splitting into 70% 
+training, 15% validation, and 15% test sets. The splits are saved as a 
+JSON file in the specified output directory.
+"""
+
 def split_data(image_dir, seed=None):
 
     # Read all processed h5 files and extract image names (without .h5 extension)
