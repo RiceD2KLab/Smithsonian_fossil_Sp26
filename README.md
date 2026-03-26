@@ -39,7 +39,18 @@
 
 ### Project Description
 
+This repository contains code for the implementation of various objection detection models for the task of detecting palynomorphs (microfossils including pollen, spores, and algae) from digital microscopy data. It additionally provides an efficient and scalable pipeline for handling large-scale, multi-focal microscope images. In particular, the repository provides the functionality to tile the source dataset into machine learning ready-formats, perform various tasks like focus stacking to prepare image data, and train several state-of-the-art object detection architectures including YOLO26 and RF-DETR. More information on the various components of the repository can be found below.
+
 ## Repo Structure
+
+- `scripts/` - Scripts for running experiments and launching SLURM jobs.
+- `src/` — Main source code for the project, organized by functionality:
+  - `src/data/` - Utilities for reading, parsing, and converting raw microscopy data.
+  - `src/preprocessing/` - Scripts for converting raw data into machine learning-ready formats.
+  - `src/exploration/` — Tools for exploratory data analysis and visualization.
+  - `src/modeling/` — Code for model training of evaluated architectures, including YOLO26 and RF-DETR.
+- `tests/` — Unit tests for various code.
+- `requirements.txt` — List of Python dependencies required to run the project.
 
 ## Installation
 

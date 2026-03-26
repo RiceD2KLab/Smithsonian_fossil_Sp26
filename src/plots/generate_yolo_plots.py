@@ -5,6 +5,12 @@ from scipy.ndimage import gaussian_filter1d
 import matplotlib.font_manager as fm
 import seaborn as sns
 
+"""
+Generates plots for YOLO training metrics from a results.csv file.
+Assumes the results.csv file has the relevant columns for training 
+and validation losses, precision, recall, and mAP.
+"""
+
 # get script dir
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
