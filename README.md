@@ -2,15 +2,14 @@
 
 ## Table of Contents
 
-- [Introduction](#introduction)
-- [Repo Structure](#repo-structure)
-- [Installation](#installation)
-- [Data](#data)
-- [Data Preprocessing](#data-preprocessing)
-- [Exploratory Data Analysis](#exploratory-data-analysis)
-- [Modeling](#modeling)
-- [Evaluation](#evaluation)
-
+- [Introduction]
+- [Repo Structure]
+- [Installation]
+- [Data]
+- [Data Preprocessing]
+- [Exploratory Data Analysis]
+- [Modeling & Evaluation]
+  
 ## Introduction
 
 ### Team Members  
