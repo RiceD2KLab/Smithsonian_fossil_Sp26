@@ -1,3 +1,7 @@
+"""
+Extracts and analyzes the width and height of regions of interest (ROIs) from NDPA files.
+Provides functions to extract ROI bounding box dimensions and generate density plots.
+"""
 import os
 import gc
 import openslide
@@ -65,7 +69,7 @@ Plot the image size distributions for both physical and pixel space for all NDPI
 
 Output: Format and write to disk a matplotlib density plot as a png
 
-Example: plot_image_size_distributions("/rhf/allocations/dsci435/smithsonian_full_sp26/Images_with_annotations_for_CNN_training/")
+Example: plot_image_size_distributions("/path/to/ndpi/files/")
 """
 def plot_image_size_distributions(directory):
     pixel_width = []
@@ -114,7 +118,7 @@ Produce density plots for the width and height of all regions of interest given 
 
 Output: Format and write to disk a matplotlib density plot as a png
 
-Example: plot_image_annotation_distributions("/rhf/allocations/dsci435/smithsonian_full_sp26/Images_with_annotations_for_CNN_training/")
+Example: plot_image_annotation_distributions("/path/to/ndpa/files/")
 """
 def plot_image_annotation_distributions(directory):
     roi_pixel_width = []

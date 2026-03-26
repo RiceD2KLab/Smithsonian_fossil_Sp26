@@ -1,3 +1,7 @@
+"""
+Counts and summarizes the frequency of different annotation labels in NDPA files.
+Provides functions to find all NDPA files, count label occurrences, and report missing labels.
+"""
 from pathlib import Path
 import pandas as pd
 from src.data.ndpa_reader import NDPAData

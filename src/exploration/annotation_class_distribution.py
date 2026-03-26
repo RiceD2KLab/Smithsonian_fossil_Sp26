@@ -1,6 +1,10 @@
-
+"""
+Plots the distribution of annotation classes (e.g., pol, spo, paly, din, alg, fun)
+Produces a bar plot showing the frequencies of each class.
+"""
 import pandas as pd
 import matplotlib.pyplot as plt
+
 df = pd.read_csv("annotation_by_category.csv")
 
 # Set first column as index

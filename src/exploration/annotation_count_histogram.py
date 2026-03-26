@@ -1,3 +1,6 @@
+"""
+Plots a histogram of the number of annotated palynomorphs per image. 
+"""
 import matplotlib.pyplot as plt
 
 with open("annotation_counts.txt", 'r') as file:

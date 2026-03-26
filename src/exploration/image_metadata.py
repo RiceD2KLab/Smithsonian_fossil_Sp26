@@ -1,3 +1,6 @@
+"""
+Extracts and visualizes metadata from NDPI slides, particularly related to staining.
+"""
 import csv
 import matplotlib.pyplot as plt
 

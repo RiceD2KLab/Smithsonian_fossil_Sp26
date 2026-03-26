@@ -70,6 +70,10 @@ The original dataset consists of multi-focal microscopy images. Each sample is s
 
 Utilities for interacting with raw NDPI and NDPA data can be found in the src/data folder, and information on their implementation and use can be found in [src/data/README.md](src/data/README.md).
 
+In addition, two auxiliary files accompany the dataset:
+- annotation_by_category.csv: Provides summary-level statistics of the number and type of annotations per annotated NDPI file.
+- annotation_categories.csv: Provides a mapping of annotation names, which may include full species names, to six prediction classes.
+
 ### HDF5 Data Format
 For efficient processing and analysis, the data is converted into HDF5 (.h5) files. Each HDF5 file contains multiple tiles (subregions) from the original images, along with relevant metadata and annotations.
 
@@ -87,6 +91,8 @@ The data can additionally be exported into the standard COCO format, which facil
 The preprocessing pipeline used in this analysis contains multiple stages, including tiling the original NDPI files, generating focus stacked images, and exporting the data into the COCO format for training. More information on the implementation and how to execute the preprocessing pipeline can be found in the following README, found in [src/preprocessing/README.md](src/preprocessing/README.md).
 
 ## Exploratory Data Analysis
+
+The src/exploration folder contains much of the exploratory data analysis performed in this project, including exploration of annotation density, the distribution of palynomorph subtypes, the sharpness of various focal planes in our multifocal data, and more. A detailed description of the available scripts and how to reproduce this analysis can be found in the following README, found in [src/exploration/README.md](src/exploration/README.md).
 
 ## Modeling & Evaluation
 

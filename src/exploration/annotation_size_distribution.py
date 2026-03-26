@@ -1,6 +1,6 @@
 """
 Extract small-object circle annotation diameters from NDP.view .ndpa files
-and plot TWO sponsor-ready histograms:
+and plot TWO histograms:
   1) Diameter in pixels
   2) Diameter in microns (µm)
 
