@@ -6,8 +6,8 @@
 - [Repo Structure](#repo-structure)
 - [Installation](#installation)
 - [Data](#data)
-- [Exploratory Data Analysis](#exploratory-data-analysis)
 - [Data Preprocessing](#data-preprocessing)
+- [Exploratory Data Analysis](#exploratory-data-analysis)
 - [Modeling](#modeling)
 - [Evaluation](#evaluation)
 

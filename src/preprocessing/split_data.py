@@ -1,7 +1,7 @@
 import os
 import json
 import random
-from src.exploration.h5_utils import list_h5_paths
+from src.preprocessing.h5_utils import list_h5_paths
 
 """
 This script splits the dataset into training, validation, and test sets. 

@@ -43,7 +43,7 @@ import h5py
 import numpy as np
 from tqdm import tqdm
 
-from src.exploration.h5_utils import list_tile_jobs
+from src.preprocessing.h5_utils import list_tile_jobs
 
 # Bbox filtering
 

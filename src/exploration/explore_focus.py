@@ -27,7 +27,7 @@ import matplotlib.ticker as ticker
 import numpy as np
 
 from src.exploration.focus_metrics import tenengrad, variance_of_laplacian, percentile_vol, percentile_tenengrad
-from src.exploration.h5_utils import list_h5_paths, list_tile_jobs
+from src.preprocessing.h5_utils import list_h5_paths, list_tile_jobs
 
 plt.rcParams.update({
     "font.family": "serif",

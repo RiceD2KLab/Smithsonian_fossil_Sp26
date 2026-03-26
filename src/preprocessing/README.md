@@ -34,3 +34,4 @@ This directory contains scripts and utilities for preprocessing NDPI/NDPA slide 
 - Each script is modular and can be run independently.
 - See each script for detailed usage instructions and options.
 - The pipeline is designed for flexibility in tile extraction, image processing, and export formats.
+- h5_utils.py provides some shared utilities for discovering and indexing H5 tile files.

@@ -1,9 +1,6 @@
 """
 h5_utils.py — Shared utilities for discovering and indexing H5 tile files.
 
-Used by both dataset.py (TileDataset) and explore_focus.py to avoid
-duplicating file-discovery logic across the codebase.
-
 Dependencies:
     h5py
 
