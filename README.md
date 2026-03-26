@@ -44,7 +44,7 @@
 ## Installation
 
 ### Prerequisites
-- Python >= 3.9
+- Python >= 3.13
 
 ### Environment Setup
 
@@ -66,7 +66,9 @@ pip install -r requirements.txt
 ## Data
 
 ### Original Data Format
-The original dataset consists of multi-focal microscopy images. Each sample is stored as an NDPI image file, which contains images of the sample at various magnifications and focal planes. Associated annotations are provided in separate NDPA files, denoting the location of palynomorphs within the NDPI files.s
+The original dataset consists of multi-focal microscopy images. Each sample is stored as an NDPI image file, which contains images of the sample at various magnifications and focal planes. Associated annotations are provided in separate, corresponding NDPA files, denoting the location of palynomorphs within the NDPI files. Our data preprocessing pipeline expects the NDPI and NDPA files to be in single directory, with each corresponding pair named as <filename>.ndpi and <filename>.ndpi.ndpa, respectively. Note that each NDPI file is very large (20-50 GB), and considerable storage space is necessary.
+
+Utilities for interacting with raw NDPI and NDPA data can be found in the src/data folder, and information on their implementation and use can be found in [src/data/README.md](src/data/README.md).
 
 ### HDF5 Data Format
 For efficient processing and analysis, the data is converted into HDF5 (.h5) files. Each HDF5 file contains multiple tiles (subregions) from the original images, along with relevant metadata and annotations.
@@ -75,12 +77,17 @@ For efficient processing and analysis, the data is converted into HDF5 (.h5) fil
 - **Groups:** Each tile is a group in the HDF5 file, containing datasets for image data, bounding boxes, labels, and derived results (e.g., focus stacked, MIP).
 - **Attributes:** Metadata such as tile coordinates, sample information, and processing parameters are stored as group or file attributes.
 
-This structure enables fast access to image regions and supports downstream tasks such as focus stacking, maximum intensity projection, and machine learning workflows.
+This structure enables fast access to image regions and supports downstream tasks such as focus stacking, maximum intensity projection, and machine learning workflows. Refer to the data preprocessing section for how this data is generated from raw NDPI and NDPA files.
 
-## Exploratory Data Analysis
+### COCO Data Format
+The data can additionally be exported into the standard COCO format, which facilitates model development. Exporting to this format does not retain all data stored in the H5 format, but can lead to improved training times due to increased compatibility with external model implementations as well as minimal overhead to decompress files, in contrast to the H5 format. Refer to the data preprocessing section for how this data is generated from  the H5 format.
 
 ## Data Preprocessing
 
-## Modeling
+The preprocessing pipeline used in this analysis contains multiple stages, including tiling the original NDPI files, generating focus stacked images, and exporting the data into the COCO format for training. More information on the implementation and how to execute the preprocessing pipeline can be found in the following README, found in [src/preprocessing/README.md](src/preprocessing/README.md).
 
-## Evaluation
+## Exploratory Data Analysis
+
+## Modeling & Evaluation
+
+This repository currently contains implementations of YOLO26 and RF-DETR for palynomoprh detection. Standard object detection evaluation metrics including precision, recall, mAP@50, and mAP@50-95 are available. More information and training and evaluating these models can be found in the following README, found in [src/models/README.md](src/models/README.md).
