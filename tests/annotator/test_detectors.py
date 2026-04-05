@@ -7,7 +7,7 @@ import cv2
 import h5py
 import numpy as np
 
-from src.annotator.models import MODEL_CONFIGS, build_detector
+from src.annotator.detectors import MODEL_CONFIGS, build_detector
 
 def _pick_random_tile(h5_path: str, seed: int) -> np.ndarray:
     """Return a random tile with palynomorph annotations from the H5 file."""
