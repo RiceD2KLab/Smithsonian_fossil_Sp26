@@ -1,86 +1,137 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 import cv2
 import numpy as np
 
+"""
+This file contains model definitions and adapters for tile-level detection 
+in the annotator pipeline. The TileDetector protocol defines a common interface 
+for different model families, and the build_detector function creates adapters 
+based on user input.
+"""
 
+# Relevant model-specific configuration parameters
+@dataclass
+class ModelConfig:
+    """Static model configuration used throughout the annotator pipeline."""
+
+    key: str # Unique model name, e.g. "yolo" or "rfdetr".
+    tile_size: int # Tile size in pixels for model inference, e.g. 1024 or 1008.
+    ndpa_color: str # Color of output NDPA annotations for this model, e.g. "#ff0000" or "#00ff00".
+
+MODEL_CONFIGS: dict[str, ModelConfig] = {
+    "yolo": ModelConfig(key="yolo", tile_size=1024, ndpa_color="#ff0000"),
+    "rfdetr": ModelConfig(key="rfdetr", tile_size=1008, ndpa_color="#00ff00"),
+}
+
+def sanitize_boxes(
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    width: int,
+    height: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Clip boxes to tile bounds and remove invalid boxes.
+    """
+    boxes_np = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+    scores_np = np.asarray(scores, dtype=np.float32).reshape(-1)
+
+    if len(boxes_np) == 0 or len(scores_np) == 0:
+        return np.zeros((0, 4), dtype=np.float32), np.array([], dtype=np.float32)
+
+    n = min(len(boxes_np), len(scores_np))
+    boxes_np = boxes_np[:n]
+    scores_np = scores_np[:n]
+
+    clipped = boxes_np.copy()
+    clipped[:, 0] = np.clip(clipped[:, 0], 0, width)
+    clipped[:, 2] = np.clip(clipped[:, 2], 0, width)
+    clipped[:, 1] = np.clip(clipped[:, 1], 0, height)
+    clipped[:, 3] = np.clip(clipped[:, 3], 0, height)
+
+    valid = (clipped[:, 2] > clipped[:, 0]) & (clipped[:, 3] > clipped[:, 1])
+    return clipped[valid], scores_np[valid]
+
+# A generic TileDetector protocol
 class TileDetector(Protocol):
     """Interface for tile-level detection models."""
 
-    def predict(self, tile_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return (boxes_xyxy, scores) for an RGB tile."""
+    def predict(self, tile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return (boxes_xyxy, scores) for a tile."""
 
-
-class YOLOTileDetector:
-    """Ultralytics YOLO adapter."""
+class YOLOTileDetector (TileDetector):
+    """Implementation of TileDetector for Ultralytics YOLO26"""
 
     def __init__(
         self,
         checkpoint_path: str,
         confidence_threshold: float,
-        imgsz: int | None = None,
-        device: str | None = None,
+        tile_size: int,
     ) -> None:
         from ultralytics import YOLO
 
         self.model = YOLO(checkpoint_path)
         self.confidence_threshold = confidence_threshold
-        self.imgsz = imgsz
-        self.device = device
+        self.imgsz = tile_size
 
-    def predict(self, tile_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        tile_bgr = cv2.cvtColor(tile_rgb, cv2.COLOR_RGB2BGR)
+    def predict(self, tile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        
+        # YOLO expects BGR input when using the model.predict interface, so convert from RGB.
+        tile_bgr = cv2.cvtColor(tile, cv2.COLOR_RGB2BGR)
+        h, w = tile.shape[:2]
+        
+        # Run inference on single tile
         kwargs = {
             "source": tile_bgr,
             "conf": self.confidence_threshold,
+            "imgsz": self.imgsz,
             "verbose": False,
         }
-        if self.imgsz is not None:
-            kwargs["imgsz"] = self.imgsz
-        if self.device is not None:
-            kwargs["device"] = self.device
-
         results = self.model.predict(**kwargs)
 
+        # Convery to numpy arrays and return
         boxes_tensor = results[0].boxes
         if boxes_tensor is None or len(boxes_tensor) == 0:
             return np.zeros((0, 4), dtype=np.float32), np.array([], dtype=np.float32)
 
         boxes = boxes_tensor.xyxy.cpu().numpy().astype(np.float32)
         conf = boxes_tensor.conf.cpu().numpy().astype(np.float32)
-        return boxes, conf
+        return sanitize_boxes(boxes, conf, width=w, height=h)
 
 
-class RFDETRTileDetector:
-    """RF-DETR adapter with ndarray-first inference and file-path fallback."""
+class RFDETRTileDetector (TileDetector):
+    """Implementation of TileDetector for RF-DETR"""
 
     def __init__(
         self,
         checkpoint_path: str,
         confidence_threshold: float,
-        resolution: int,
-        variant: str = "base",
+        tile_size: int,
     ) -> None:
         from src.models.rfdetr.train import _MODEL_CLASSES
 
-        if variant not in _MODEL_CLASSES:
-            valid = ", ".join(sorted(_MODEL_CLASSES))
-            raise ValueError(f"Unknown RF-DETR variant '{variant}'. Choose one of: {valid}.")
+        model_cls = _MODEL_CLASSES.get("base")
+        if model_cls is None:
+            raise ValueError("RF-DETR variant is unavailable in _MODEL_CLASSES.")
 
-        self.model = _MODEL_CLASSES[variant](
+        self.model = model_cls(
             pretrain_weights=checkpoint_path,
             num_classes=1,
-            resolution=resolution,
+            resolution=tile_size,
         )
         self.model.optimize_for_inference()
-        self.confidence_threshold = confidence_threshold
-        self._supports_ndarray: bool | None = None
+        self.confidence_threshold = confidence_threshold 
 
-    def _parse_detections(self, detections: object) -> tuple[np.ndarray, np.ndarray]:
+    def predict(self, tile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        tile_bgr = cv2.cvtColor(tile, cv2.COLOR_RGB2BGR)
+        h, w = tile.shape[:2]
+        detections = self.model.predict(tile_bgr, threshold=self.confidence_threshold)
+
         boxes = getattr(detections, "xyxy", None)
         scores = getattr(detections, "confidence", None)
 
@@ -93,58 +144,27 @@ class RFDETRTileDetector:
         else:
             scores_np = np.asarray(scores, dtype=np.float32)
         return boxes_np, scores_np
-
-    def _predict_with_path(self, tile_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
-            temp_path = Path(handle.name)
-
-        try:
-            cv2.imwrite(str(temp_path), tile_bgr)
-            detections = self.model.predict(str(temp_path), threshold=self.confidence_threshold)
-            return self._parse_detections(detections)
-        finally:
-            temp_path.unlink(missing_ok=True)
-
-    def predict(self, tile_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        tile_bgr = cv2.cvtColor(tile_rgb, cv2.COLOR_RGB2BGR)
-
-        if self._supports_ndarray is not False:
-            try:
-                detections = self.model.predict(tile_bgr, threshold=self.confidence_threshold)
-                self._supports_ndarray = True
-                return self._parse_detections(detections)
-            except TypeError:
-                self._supports_ndarray = False
-
-        return self._predict_with_path(tile_bgr)
-
+        # return sanitize_boxes(boxes_np, scores_np, width=w, height=h)
 
 def build_detector(
     model_name: str,
     checkpoint_path: str,
     confidence_threshold: float,
     tile_size: int,
-    rfdetr_variant: str = "base",
-    yolo_imgsz: int | None = None,
-    device: str | None = None,
 ) -> TileDetector:
     """Create a detector adapter for the requested model family."""
-    model_key = model_name.strip().lower().replace("-", "")
-
-    if model_key == "yolo":
+    if model_name == "yolo":
         return YOLOTileDetector(
             checkpoint_path=checkpoint_path,
             confidence_threshold=confidence_threshold,
-            imgsz=yolo_imgsz,
-            device=device,
+            tile_size=tile_size,
         )
 
-    if model_key == "rfdetr":
+    if model_name == "rfdetr":
         return RFDETRTileDetector(
             checkpoint_path=checkpoint_path,
             confidence_threshold=confidence_threshold,
-            resolution=tile_size,
-            variant=rfdetr_variant,
+            tile_size=tile_size,
         )
 
     raise ValueError("model_name must be either 'yolo' or 'rfdetr'.")
