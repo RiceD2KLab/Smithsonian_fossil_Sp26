@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os
 import xml.etree.ElementTree as ET
 
@@ -9,13 +7,40 @@ class NDPAWriter:
 
     def __init__(self, output_path: str) -> None:
         self.output_path = output_path
-        self._root = ET.Element("annotations")
-        self._next_id = 1
-        self.save()
+        self._tree, self._root = self._load_or_create(output_path)
+        self._next_id = self._compute_next_id()
+        if not os.path.exists(output_path):
+            self.save()
 
     @staticmethod
-    def _to_int(value: float | int) -> int:
-        return int(round(float(value)))
+    def _load_or_create(path: str) -> tuple[ET.ElementTree, ET.Element]:
+        """
+        Load an existing NDPA XML file or create a new one if it doesn't exist.
+        """
+        # Load existing NDPA XML if available
+        if os.path.exists(path):
+            tree = ET.parse(path)
+            root = tree.getroot()
+            if root.tag != "annotations":
+                raise ValueError(f"Invalid NDPA root '{root.tag}'. Expected 'annotations'.")
+        
+        # Otherwise, create a new XML tree with the correct root
+        else:
+            root = ET.Element("annotations")
+            tree = ET.ElementTree(root)
+
+        # Return both the tree and root
+        return tree, root
+
+    def _compute_next_id(self) -> int:
+        """
+        Compute the next available annotation ID by scanning existing <ndpviewstate> entries.
+        """
+        max_id = 0
+        for state in self._root.findall("ndpviewstate"):
+            raw_id = state.get("id", "0")
+            max_id = max(max_id, int(raw_id))
+        return max_id + 1
 
     def add_bounding_box(
         self,
@@ -26,8 +51,10 @@ class NDPAWriter:
         width_nm: float,
         height_nm: float,
         color: str = "#000000",
+        details: str = "",
     ) -> int:
-        """Add one rectangular annotation in NDPA format.
+        """
+        Add one rectangular annotation in NDPA format.
 
         Args:
             label: Class label used as <title>.
@@ -37,20 +64,26 @@ class NDPAWriter:
             width_nm: Bounding box width in nanometers.
             height_nm: Bounding box height in nanometers.
             color: Hex color for the annotation stroke.
-        """
-        x1 = self._to_int(x_nm)
-        y1 = self._to_int(y_nm)
-        x2 = self._to_int(x_nm + width_nm)
-        y2 = self._to_int(y_nm + height_nm)
+            details: Free-text note stored in <details> (e.g. source metadata).
 
-        cx = self._to_int((x1 + x2) / 2.0)
-        cy = self._to_int((y1 + y2) / 2.0)
+        Returns:
+            The integer ID assigned to the new annotation.
+        """
+        x1 = int(round(x_nm))
+        y1 = int(round(y_nm))
+        x2 = int(round(x_nm + width_nm))
+        y2 = int(round(y_nm + height_nm))
+
+        cx = int(round((x1 + x2) / 2.0))
+        cy = int(round((y1 + y2) / 2.0))
 
         state = ET.SubElement(self._root, "ndpviewstate", {"id": str(self._next_id)})
         self._next_id += 1
 
         ET.SubElement(state, "title").text = str(label)
-        ET.SubElement(state, "details")
+        details_elem = ET.SubElement(state, "details")
+        if details:
+            details_elem.text = str(details)
         ET.SubElement(state, "coordformat").text = "nanometers"
         ET.SubElement(state, "lens").text = f"{float(lens):.6f}"
         ET.SubElement(state, "x").text = str(cx)
@@ -82,10 +115,8 @@ class NDPAWriter:
         ET.SubElement(annotation, "specialtype").text = "rectangle"
         return self._next_id - 1
 
-    def save(self, output_path: str | None = None) -> None:
-        """Write NDPA XML to disk, creating parent directories as needed."""
-        target = output_path if output_path is not None else self.output_path
-        os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
-        tree = ET.ElementTree(self._root)
-        ET.indent(tree, space="\t")
-        tree.write(target, encoding="utf-8", xml_declaration=True)
+    def save(self) -> None:
+        """Write NDPA XML to disk."""
+        os.makedirs(os.path.dirname(os.path.abspath(self.output_path)), exist_ok=True)
+        ET.indent(self._tree, space="\t")
+        self._tree.write(self.output_path, encoding="utf-8", xml_declaration=True)
