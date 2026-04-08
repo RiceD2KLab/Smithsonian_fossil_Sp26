@@ -19,6 +19,48 @@ from ultralytics import YOLO
 
 from src.models.yolo26.utils import convert_coco_labels_to_yolo, get_coco_yaml_path, validate_coco_dir
 
+AUG_CONFIG: dict[str, dict[str, Any]] = {
+    # Matches the RF-DETR Albumentations pipeline
+    "custom": {
+        "fliplr": 0.5,       # HorizontalFlip(p=0.5)
+        "flipud": 0.5,       # VerticalFlip(p=0.5)
+        "degrees": 180,      # Rotate(limit=180)
+        "hsv_h": 0.028,      # HueSaturationValue(hue_shift_limit=10)
+        "hsv_s": 0.078,      # HueSaturationValue(sat_shift_limit=20)
+        "hsv_v": 0.2,        # RandomBrightnessContrast(brightness_limit=0.2)
+        "mosaic": 0.0,
+        "mixup": 0.0,
+        "copy_paste": 0.0,
+        "auto_augment": "",
+        "erasing": 0.0,
+        "translate": 0.0,
+        "scale": 0.0,
+        "shear": 0.0,
+        "perspective": 0.0,
+    },
+    # Use Ultralytics default augmentation settings (nothing overridden)
+    "default": {},
+    # All augmentations off
+    "none": {
+        "fliplr": 0.0,
+        "flipud": 0.0,
+        "degrees": 0.0,
+        "hsv_h": 0.0,
+        "hsv_s": 0.0,
+        "hsv_v": 0.0,
+        "mosaic": 0.0,
+        "mixup": 0.0,
+        "copy_paste": 0.0,
+        "auto_augment": "",
+        "erasing": 0.0,
+        "translate": 0.0,
+        "scale": 0.0,
+        "shear": 0.0,
+        "perspective": 0.0,
+    },
+}
+
+
 def parse_training_arguments() -> argparse.Namespace:
     """
     Parse command-line arguments for YOLO training.
@@ -98,6 +140,19 @@ def parse_training_arguments() -> argparse.Namespace:
         help="Number of epochs to wait for improvement before stopping.",
     )
 
+    # Augmentation
+    parser.add_argument(
+        "--aug_config",
+        choices=list(AUG_CONFIG.keys()),
+        default="custom",
+        help=(
+            "Augmentation configuration (default: custom). "
+            "'custom' matches the RF-DETR Albumentations pipeline. "
+            "'default' uses Ultralytics built-in defaults. "
+            "'none' disables all augmentations."
+        ),
+    )
+
     # Device and output
     parser.add_argument(
         "--device",
@@ -134,6 +189,7 @@ def build_training_overrides(
     lr0: float,
     lrf: float,
     patience: int,
+    aug_config: str,
 ) -> dict[str, Any]:
     """
     Build the overrides dictionary for YOLO training.
@@ -150,6 +206,8 @@ def build_training_overrides(
         optimizer: Optimizer name.
         lr0: Initial learning rate.
         lrf: Final learning rate factor.
+        patience: Early-stopping patience (epochs without improvement).
+        aug_config: Augmentation configuration key from AUG_CONFIG.
 
     Returns:
         Dictionary of training overrides for model.train().
@@ -170,6 +228,8 @@ def build_training_overrides(
 
     if device is not None:
         overrides["device"] = device
+
+    overrides.update(AUG_CONFIG[aug_config])
 
     return overrides
 
@@ -199,6 +259,7 @@ def main() -> None:
         lr0=args.lr0,
         lrf=args.lrf,
         patience=args.patience,
+        aug_config=args.aug_config,
     )
 
     model.train(**overrides)
