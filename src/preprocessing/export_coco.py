@@ -45,20 +45,15 @@ from tqdm import tqdm
 
 from src.preprocessing.h5_utils import list_tile_jobs
 
-# Bbox filtering
 
-MINIMUM_BOX_AREA_PX: int = 16
-MINIMUM_ASPECT_RATIO: float = 0.25
-
-
-def _is_valid_bbox(w: float, h: float) -> bool:
+def _is_valid_bbox(w: float, h: float, minimum_box_area_px: int, minimum_aspect_ratio: float) -> bool:
     if w <= 0 or h <= 0:
         return False
-    if w * h < MINIMUM_BOX_AREA_PX:
+    if w * h < minimum_box_area_px:
         return False
-    if h < MINIMUM_ASPECT_RATIO * w:
+    if h < minimum_aspect_ratio * w:
         return False
-    if w < MINIMUM_ASPECT_RATIO * h:
+    if w < minimum_aspect_ratio * h:
         return False
     return True
 
@@ -95,6 +90,9 @@ def _export_tile(
     mode: ExportMode,
     image_format: str,
     single_cls: bool,
+    filter_bboxes: bool,
+    minimum_box_area_px: Optional[int],
+    minimum_aspect_ratio: Optional[float],
 ) -> list[dict]:
     """
     Extract image(s) for one tile and write them to split_dir.
@@ -161,12 +159,11 @@ def _export_tile(
             )
 
         # 2. Filter bboxes (same for every plane of this tile)
-        
         valid_bboxes: list[list[float]] = []
         valid_labels: list[int] = []
         for bbox, label in zip(bboxes_raw.tolist(), labels_raw.tolist()):
             x, y, bw, bh = bbox
-            if not _is_valid_bbox(bw, bh):
+            if filter_bboxes and not _is_valid_bbox(bw, bh, minimum_box_area_px or 0, minimum_aspect_ratio or 0):
                 continue
             # H5 labels are 1-indexed; convert to 0-indexed for rfdetr & yolo compatibility.
             cat_id = 0 if single_cls else int(label) - 1
@@ -275,6 +272,9 @@ def run(
     image_format: str,
     single_cls: bool,
     metadata_json: Optional[str],
+    filter_bboxes: bool,
+    minimum_box_area_px: Optional[int],
+    minimum_aspect_ratio: Optional[float],
 ) -> None:
     # 1. Discover tiles and partition them by split
     all_tiles = list_tile_jobs(h5_root)
@@ -325,6 +325,7 @@ def run(
                     _export_tile,
                     h5_path, group_name, image_stem,
                     split_img_dir, mode, image_format, single_cls,
+                    filter_bboxes, minimum_box_area_px or 0, minimum_aspect_ratio or 0,
                 ): (image_stem, group_name)
                 for h5_path, image_stem, group_name in tiles
             }
@@ -436,6 +437,26 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path to metadata.json with label_map for multi-class category names",
     )
+    parser.add_argument(
+        "--filter_bboxes",
+        action="store_true",
+        default=False,
+        help="Filter bboxes based on area and aspect ratio",
+    )
+    parser.add_argument(
+        "--minimum_box_area_px",
+        type=int,
+        required=False,
+        default=16,
+        help="Minimum area of a bounding box in pixels",
+    )
+    parser.add_argument(
+        "--minimum_aspect_ratio",
+        type=float,
+        required=False,
+        default=0.25,
+        help="Minimum aspect ratio of a bounding box",
+    )
     return parser.parse_args()
 
 
@@ -451,6 +472,9 @@ def main() -> None:
         image_format=args.image_format,
         single_cls=args.single_cls,
         metadata_json=args.metadata_json,
+        filter_bboxes=args.filter_bboxes,
+        minimum_box_area_px=args.minimum_box_area_px,
+        minimum_aspect_ratio=args.minimum_aspect_ratio,
     )
 
 
