@@ -72,23 +72,23 @@ class ExportMode:
     kind: str               # focus_stack | best_plane | plane | planes | all_planes | top_k_planes
     plane_indices: list[int]  # populated for plane/planes; empty for focus_stack/best_plane/all_planes/top_k_planes
     top_k: int = 5          # used only when kind == "top_k_planes"
-
+    ranking_metric: str = "LoG"  # used by best_plane/top_k_planes: LoG | VoL | tenengrad
 
 def build_export_mode(args: argparse.Namespace) -> ExportMode:
     kind = args.mode
     if kind == "plane":
         if args.plane_index is None:
             raise ValueError("--plane_index is required when --mode plane")
-        return ExportMode(kind=kind, plane_indices=[args.plane_index])
+        return ExportMode(kind=kind, plane_indices=[args.plane_index], ranking_metric=args.ranking_metric)
     if kind == "planes":
         if not args.plane_indices:
             raise ValueError("--plane_indices is required when --mode planes")
         indices = [int(x.strip()) for x in args.plane_indices.split(",")]
-        return ExportMode(kind=kind, plane_indices=indices)
+        return ExportMode(kind=kind, plane_indices=indices, ranking_metric=args.ranking_metric)
     if kind == "top_k_planes":
         top_k = getattr(args, "top_k", 5) or 5
-        return ExportMode(kind=kind, plane_indices=[], top_k=top_k)
-    return ExportMode(kind=kind, plane_indices=[])
+        return ExportMode(kind=kind, plane_indices=[], top_k=top_k, ranking_metric=args.ranking_metric)
+    return ExportMode(kind=kind, plane_indices=[], ranking_metric=args.ranking_metric)
 
 
 def _export_tile(
@@ -126,15 +126,17 @@ def _export_tile(
                 raw_images = [(np.array(grp["focus_stacked"]), None)]
 
             elif mode.kind == "best_plane":
-                if "data" not in grp or "focal_plane_ranking" not in grp:
-                    return [{"skipped": True, "skip_reason": "data or focal_plane_ranking missing"}]
-                best_z = int(np.array(grp["focal_plane_ranking"])[0])
+                ranking_key = "focal_plane_ranking" + "_" + mode.ranking_metric
+                if "data" not in grp or ranking_key not in grp:
+                    return [{"skipped": True, "skip_reason": f"data or ranking ({mode.ranking_metric}) missing"}]
+                best_z = int(np.array(grp[ranking_key])[0])
                 raw_images = [(np.array(grp["data"][:, :, :, best_z]), None)]
 
             elif mode.kind == "top_k_planes":
-                if "data" not in grp or "focal_plane_ranking" not in grp:
-                    return [{"skipped": True, "skip_reason": "data or focal_plane_ranking missing"}]
-                ranking = np.array(grp["focal_plane_ranking"])  # (Z,) best→worst
+                ranking_key = "focal_plane_ranking" + "_" + mode.ranking_metric
+                if "data" not in grp or ranking_key not in grp:
+                    return [{"skipped": True, "skip_reason": f"data or ranking ({mode.ranking_metric}) missing"}]
+                ranking = np.array(grp[ranking_key])  # (Z,) best→worst
                 data = np.array(grp["data"])  # (H, W, C, Z)
                 k = min(mode.top_k, len(ranking))
                 top_z_list = [int(ranking[i]) for i in range(k)]
@@ -396,11 +398,20 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Image extraction mode: "
             "focus_stack=precomputed focus stack, "
-            "best_plane=sharpest Z-plane via focal_plane_ranking, "
+            "best_plane=sharpest Z-plane via selected ranking metric, "
             "plane=single Z-plane (requires --plane_index), "
             "planes=selected Z-planes (requires --plane_indices), "
             "all_planes=every Z-plane, "
-            "top_k_planes=top K sharpest planes per tile (use --top_k, default 5)"
+            "top_k_planes=top K sharpest planes per tile via selected ranking metric (use --top_k, default 5)"
+        ),
+    )
+    parser.add_argument(
+        "--ranking_metric",
+        choices=["LoG", "VoL", "tenengrad"],
+        default="LoG",
+        help=(
+            "Ranking metric used for --mode best_plane and --mode top_k_planes: "
+            "LoG (default), VoL, or tenengrad"
         ),
     )
     parser.add_argument(
