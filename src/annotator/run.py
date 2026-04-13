@@ -47,22 +47,16 @@ def parse_args() -> argparse.Namespace:
         help="IoU threshold for cross-tile NMS merging.",
     )
     parser.add_argument(
-        "--rfdetr_variant",
-        default="base",
-        choices=["nano", "small", "base", "large"],
-        help="RF-DETR variant when --model_name rfdetr.",
-    )
-    parser.add_argument(
-        "--yolo_imgsz",
-        type=int,
-        default=None,
-        help="Optional YOLO inference size override.",
+        "--compression_method",
+        choices=["focus_stack", "best_focal_plane"],
+        default="focus_stack",
+        help="Method to compress W x H x C x Z tiles to W x H x C.",
     )
     parser.add_argument(
         "--focus_stack_kernel_size",
         type=int,
         default=5,
-        help="Kernel size for LoG focus stacking.",
+        help="Kernel size for LoG-based compression methods.",
     )
     parser.add_argument(
         "--annotation_class",
@@ -70,9 +64,9 @@ def parse_args() -> argparse.Namespace:
         help="Class label written to every CSV row.",
     )
     parser.add_argument(
-        "--device",
-        default=None,
-        help="Optional inference device override (e.g., cuda:0 or cpu).",
+        "--annotation_source",
+        default="model",
+        help="Source note for NDPA details (e.g. model, human, review).",
     )
     return parser.parse_args()
 
@@ -88,11 +82,10 @@ def main() -> None:
         magnification=args.magnification,
         confidence_threshold=args.confidence_threshold,
         nms_iou_threshold=args.nms_iou_threshold,
-        rfdetr_variant=args.rfdetr_variant,
-        yolo_imgsz=args.yolo_imgsz,
+        compression_method=args.compression_method,
         focus_stack_kernel_size=args.focus_stack_kernel_size,
         annotation_class=args.annotation_class,
-        device=args.device,
+        annotation_source=args.annotation_source,
     )
 
     annotator = NDPIAnnotator(config)

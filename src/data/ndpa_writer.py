@@ -115,6 +115,63 @@ class NDPAWriter:
         ET.SubElement(annotation, "specialtype").text = "rectangle"
         return self._next_id - 1
 
+    def add_circle(
+        self,
+        label: str,
+        lens: float,
+        x_nm: float,
+        y_nm: float,
+        width_nm: float,
+        height_nm: float,
+        color: str = "#000000",
+        details: str = "",
+    ) -> int:
+        """
+        Add one circular annotation in NDPA format.
+
+        The circle is inscribed in the input bounding box, i.e. centered at the
+        box center with radius = min(width, height) / 2.
+        """
+        x1 = int(round(x_nm))
+        y1 = int(round(y_nm))
+        x2 = int(round(x_nm + width_nm))
+        y2 = int(round(y_nm + height_nm))
+
+        cx = int(round((x1 + x2) / 2.0))
+        cy = int(round((y1 + y2) / 2.0))
+        radius = max(1, int(round(min(abs(width_nm), abs(height_nm)) / 2.0)))
+
+        state = ET.SubElement(self._root, "ndpviewstate", {"id": str(self._next_id)})
+        self._next_id += 1
+
+        ET.SubElement(state, "title").text = str(label)
+        details_elem = ET.SubElement(state, "details")
+        if details:
+            details_elem.text = str(details)
+        ET.SubElement(state, "coordformat").text = "nanometers"
+        ET.SubElement(state, "lens").text = f"{float(lens):.6f}"
+        ET.SubElement(state, "x").text = str(cx)
+        ET.SubElement(state, "y").text = str(cy)
+        ET.SubElement(state, "z").text = "0"
+        ET.SubElement(state, "showtitle").text = "0"
+        ET.SubElement(state, "showhistogram").text = "0"
+        ET.SubElement(state, "showlineprofile").text = "0"
+
+        annotation = ET.SubElement(
+            state,
+            "annotation",
+            {
+                "type": "circle",
+                "displayname": "AnnotateCircle",
+                "color": color,
+            },
+        )
+        ET.SubElement(annotation, "x").text = str(cx)
+        ET.SubElement(annotation, "y").text = str(cy)
+        ET.SubElement(annotation, "radius").text = str(radius)
+        ET.SubElement(annotation, "measuretype").text = "0"
+        return self._next_id - 1
+
     def save(self) -> None:
         """Write NDPA XML to disk."""
         os.makedirs(os.path.dirname(os.path.abspath(self.output_path)), exist_ok=True)

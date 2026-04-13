@@ -4,11 +4,11 @@ This module implements a full end-to-end annotation pipeline for NDPI slides.
 
 Given an NDPI file, the pipeline:
 1. Opens the NDPI using `NDPIData` from `src/data/ndpi_reader.py`.
-2. Loads one model family: YOLO or RF-DETR.
+2. Loads one model family: YOLO or RF-DETR from a fixed model-config registry.
 3. Generates a full tile grid over the entire image bounds (width and height) at the requested magnification.
-4. Focus-stacks each tile from `W x H x C x Z` to `W x H x C` using `focus_stack` from `src/preprocessing/focus_stack.py`.
+4. Compresses each tile from `W x H x C x Z` to `W x H x C` using a selected method.
 5. Runs tile-level detection and converts tile outputs back to global coordinates and nanometer-space coordinates.
-6. Merges detections from overlapping tiles with non-max suppression (NMS).
+6. Merges detections from overlapping tiles using overlap-aware deduplication (neighbor-tile IoU suppression).
 7. Writes final merged annotations to both CSV and NDPA files.
 
 All output rows use class label `paly` by default.
@@ -54,9 +54,14 @@ Supported model names:
 - `rfdetr`
 - `rf-detr` (CLI alias)
 
-Tile sizes are enforced by model family:
-- YOLO: `1024`
-- RF-DETR: `1008`
+Each model key maps to a constant config used throughout the pipeline.
+
+Current model config map:
+- `yolo`: `tile_size=1024`, NDPA color=`#ff0000` (red)
+- `rfdetr`: `tile_size=1008`, NDPA color=`#00ff00` (green)
+
+YOLO inference size is tied to tile size (no separate `yolo_imgsz` parameter).
+RF-DETR uses the fixed `base` variant in this pipeline.
 
 ### 3) Full-Slide Tiling Across Entire Bounds
 
@@ -70,14 +75,15 @@ Stride is derived from overlap:
 
 The grid always includes trailing positions so the final tiles reach the rightmost and bottom-most edges.
 
-### 4) Focus Stacking
+### 4) Tile Compression (4D -> 2D)
 
-Each tile is read as a 4D stack (`H x W x C x Z`) and focus-stacked via:
-- `src.preprocessing.focus_stack.focus_stack(tile, k=focus_stack_kernel_size)`
+Each tile is read as a 4D stack (`H x W x C x Z`) and compressed to 3D (`H x W x C`) using a resolved `compress_2d(tile_4d)` function selected by `compression_method`.
 
-The pipeline accepts either:
-- return value as stacked image, or
-- tuple return where stacked image is first element.
+Supported methods:
+- `focus_stack`: uses `src.preprocessing.focus_stack.focus_stack(tile, k=focus_stack_kernel_size)`
+- `best_focal_plane`: uses `src.preprocessing.focus_stack.best_focal_plane(tile, k=focus_stack_kernel_size)`
+
+Both methods are normalized to return a `uint8` 3D tile.
 
 ### 5) Inference + Coordinate Conversion
 
@@ -99,10 +105,22 @@ Bounding box conversion:
 - `width_nm = (x2_px - x1_px) * nm_per_px`
 - `height_nm = (y2_px - y1_px) * nm_per_px`
 
-### 6) Cross-Tile Merge (NMS)
+### 6) Cross-Tile Merge (Boundary-Pair End Pass)
 
-After all tiles are processed, detections are merged globally with score-sorted class-agnostic NMS:
-- IoU threshold configured by `nms_iou_threshold`.
+Detections are first stored per tile in a tile-index map keyed as `(row, col)` where:
+- `(0, 0)` is top-left
+- `(0, 1)` is one tile to the right
+- `(1, 0)` is one tile below
+
+After all tiles are processed, deduplication runs only across overlapping tile pairs (tile boundaries), not globally across the whole slide.
+
+Behavior:
+- Candidate comparisons are limited to overlap-neighbor tile pairs (including diagonal overlap pairs when applicable).
+- A fast rectangle-intersection check runs before IoU.
+- Pairs with IoU above `nms_iou_threshold` are grouped as duplicate clusters.
+- In each duplicate cluster, the highest-confidence detection is kept.
+
+This handles multi-tile overlap points (3+ tiles) robustly because duplicates are resolved by connected components rather than isolated pair decisions.
 
 ### 7) CSV + NDPA Export
 
@@ -124,12 +142,15 @@ NDPA format:
 - Root element: `annotations`
 - One `ndpviewstate` per detection
 - `title` = class label
-- `details` empty
+- `details` contains a source note (for example: `source=model; model=yolo`)
 - `coordformat` = `nanometers`
 - `lens` = magnification
 - `x`, `y` = bbox center in nanometers
 - `z` = `0`
 - Rectangle corners stored under `annotation/pointlist/point`
+- `annotation/@color` is model-specific (YOLO red, RF-DETR green)
+
+If the NDPA file already exists, new annotations are appended. If it does not exist, an empty NDPA file is created first. This allows running YOLO and RF-DETR sequentially into the same NDPA file.
 
 ## CLI Usage
 
@@ -142,7 +163,8 @@ python -m src.annotator \
   --model_name yolo \
   --checkpoint_path /path/to/yolo.pt \
   --overlap 0.10 \
-  --magnification 20
+  --magnification 20 \
+  --compression_method focus_stack
 ```
 
 RF-DETR example:
@@ -155,7 +177,7 @@ python -m src.annotator \
   --checkpoint_path /path/to/rfdetr.pt \
   --overlap 0.10 \
   --magnification 20 \
-  --rfdetr_variant base
+  --compression_method best_focal_plane
 ```
 
 ## Parameters
@@ -171,13 +193,10 @@ Required:
 Common optional:
 - `--confidence_threshold` (default `0.25`)
 - `--nms_iou_threshold` (default `0.5`)
+- `--compression_method` in `{focus_stack, best_focal_plane}`
 - `--annotation_class` (default `paly`)
+- `--annotation_source` (default `model`)
 - `--focus_stack_kernel_size` (default `5`)
-- `--device` (optional)
-
-Model-specific optional:
-- YOLO: `--yolo_imgsz`
-- RF-DETR: `--rfdetr_variant` in `{nano, small, base, large}`
 
 ## Programmatic Usage
 

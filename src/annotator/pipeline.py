@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import csv
 import os
 from dataclasses import dataclass
@@ -9,12 +7,11 @@ from typing import Callable
 import numpy as np
 from tqdm import tqdm
 
-from src.annotator.models import TileDetector, build_detector
-from src.annotator.nms import non_max_suppression
+from src.annotator.detectors import MODEL_CONFIGS, ModelConfig, TileDetector, build_detector
 from src.annotator.types import Detection
 from src.data.ndpa_writer import NDPAWriter
 from src.data.ndpi_reader import NDPIData
-from src.preprocessing.focus_stack import focus_stack
+from src.preprocessing.focus_stack import best_focal_plane, focus_stack
 
 
 @dataclass
@@ -29,26 +26,29 @@ class AnnotatorConfig:
     magnification: float
     confidence_threshold: float = 0.25
     nms_iou_threshold: float = 0.5
-    rfdetr_variant: str = "base"
-    yolo_imgsz: int | None = None
+    compression_method: str = "focus_stack"
     focus_stack_kernel_size: int = 5
     annotation_class: str = "paly"
-    device: str | None = None
+    annotation_source: str = "model"
+
+    @property
+    def model_key(self) -> str:
+        return self.model_name.lower().strip()
+
+    @property
+    def model_config(self) -> ModelConfig:
+        return MODEL_CONFIGS[self.model_key]
 
     @property
     def tile_size(self) -> int:
-        key = self.model_name.strip().lower().replace("-", "")
-        if key == "yolo":
-            return 1024
-        if key == "rfdetr":
-            return 1008
-        raise ValueError("model_name must be either 'yolo' or 'rfdetr'.")
+        return self.model_config.tile_size
 
     def validate(self) -> None:
         if not os.path.isfile(self.ndpi_path):
             raise FileNotFoundError(f"NDPI file not found: {self.ndpi_path}")
         if not os.path.isfile(self.checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {self.checkpoint_path}")
+        _ = self.model_key
         if not self.output_dir:
             raise ValueError("output_dir must be a non-empty path.")
         if not (0.0 <= self.overlap < 1.0):
@@ -59,6 +59,50 @@ class AnnotatorConfig:
             raise ValueError("confidence_threshold must be in [0.0, 1.0].")
         if not (0.0 <= self.nms_iou_threshold <= 1.0):
             raise ValueError("nms_iou_threshold must be in [0.0, 1.0].")
+        if self.compression_method not in {"focus_stack", "best_focal_plane"}:
+            raise ValueError("compression_method must be one of: focus_stack, best_focal_plane.")
+
+
+@dataclass
+class _TileSpec:
+    """Grid tile coordinates with both pixel origin and grid index."""
+
+    x: int
+    y: int
+    w: int
+    h: int
+    ix: int
+    iy: int
+
+
+def resolve_compress_2d(
+    method: str,
+    kernel_size: int,
+) -> Callable[[np.ndarray], np.ndarray]:
+    """Resolve a tile-compression method string to a callable compress_2d(tile_4d)."""
+    method_key = method.strip().lower()
+
+    if method_key == "focus_stack":
+        def compress_2d(tile_4d: np.ndarray) -> np.ndarray:
+            stacked = focus_stack(tile_4d, k=kernel_size)
+            image = stacked[0] if isinstance(stacked, tuple) else stacked
+            if image.dtype != np.uint8:
+                image = np.clip(image, 0, 255).astype(np.uint8)
+            return image
+
+        return compress_2d
+
+    if method_key == "best_focal_plane":
+        def compress_2d(tile_4d: np.ndarray) -> np.ndarray:
+            plane = best_focal_plane(tile_4d, k=kernel_size)
+            image = plane[0] if isinstance(plane, tuple) else plane
+            if image.dtype != np.uint8:
+                image = np.clip(image, 0, 255).astype(np.uint8)
+            return image
+
+        return compress_2d
+
+    raise ValueError("Unsupported compression method. Choose 'focus_stack' or 'best_focal_plane'.")
 
 
 class NDPIAnnotator:
@@ -67,20 +111,22 @@ class NDPIAnnotator:
     def __init__(
         self,
         config: AnnotatorConfig,
-        focus_stack_fn: Callable[..., object] = focus_stack,
+        compress_2d_fn: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> None:
         config.validate()
         self.config = config
+        self.model_key = config.model_key
+        self.model_config = config.model_config
         self.ndpi = NDPIData(config.ndpi_path)
-        self.focus_stack_fn = focus_stack_fn
+        self.compress_2d = compress_2d_fn or resolve_compress_2d(
+            method=config.compression_method,
+            kernel_size=config.focus_stack_kernel_size,
+        )
         self.detector: TileDetector = build_detector(
-            model_name=config.model_name,
+            model_name=self.model_key,
             checkpoint_path=config.checkpoint_path,
             confidence_threshold=config.confidence_threshold,
-            tile_size=config.tile_size,
-            rfdetr_variant=config.rfdetr_variant,
-            yolo_imgsz=config.yolo_imgsz,
-            device=config.device,
+            tile_size=self.model_config.tile_size,
         )
 
         self._nm_per_px_40x = self.ndpi.metadata.mpp_x * 1000.0
@@ -93,6 +139,9 @@ class NDPIAnnotator:
         self._origin_y_nm = self.ndpi.metadata.y_offset_nm - (
             self.ndpi.metadata.full_height / 2.0
         ) * self._nm_per_px_40x
+        self._tile_stride = max(1, int(round(self.config.tile_size * (1.0 - self.config.overlap))))
+        # Number of tile-index steps that can still overlap at current stride.
+        self._overlap_span = max(0, (self.config.tile_size - 1) // self._tile_stride)
         self.csv_output_path: str | None = None
         self.ndpa_output_path: str | None = None
 
@@ -124,14 +173,18 @@ class NDPIAnnotator:
             positions.append(last)
         return positions
 
-    def _build_tile_grid(self) -> list[tuple[int, int, int, int]]:
+    def _build_tile_grid(self) -> list[_TileSpec]:
         image_w, image_h = self._image_size_at_magnification()
         tile_size = self.config.tile_size
-        stride = max(1, int(round(tile_size * (1.0 - self.config.overlap))))
+        stride = self._tile_stride
 
         xs = self._axis_positions(image_w, tile_size, stride)
         ys = self._axis_positions(image_h, tile_size, stride)
-        return [(x, y, tile_size, tile_size) for y in ys for x in xs]
+        tiles: list[_TileSpec] = []
+        for iy, y in enumerate(ys):
+            for ix, x in enumerate(xs):
+                tiles.append(_TileSpec(x=x, y=y, w=tile_size, h=tile_size, ix=ix, iy=iy))
+        return tiles
 
     def _to_nm_bbox(self, x1_px: float, y1_px: float, x2_px: float, y2_px: float) -> tuple[float, float, float, float]:
         x_nm = x1_px * self._nm_per_px + self._origin_x_nm
@@ -141,28 +194,140 @@ class NDPIAnnotator:
         return x_nm, y_nm, width_nm, height_nm
 
     @staticmethod
-    def _clip_boxes_xyxy(
-        boxes: np.ndarray,
-        width: int,
-        height: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        clipped = boxes.copy()
-        clipped[:, 0] = np.clip(clipped[:, 0], 0, width)
-        clipped[:, 2] = np.clip(clipped[:, 2], 0, width)
-        clipped[:, 1] = np.clip(clipped[:, 1], 0, height)
-        clipped[:, 3] = np.clip(clipped[:, 3], 0, height)
-        valid = (clipped[:, 2] > clipped[:, 0]) & (clipped[:, 3] > clipped[:, 1])
-        return clipped[valid], valid
+    def _has_intersection(a: Detection, b: Detection) -> bool:
+        """Fast rectangle intersection test before IoU."""
+        return not (
+            a.x2_px <= b.x1_px
+            or a.x1_px >= b.x2_px
+            or a.y2_px <= b.y1_px
+            or a.y1_px >= b.y2_px
+        )
 
-    def _focus_stack_tile(self, tile_4d: np.ndarray) -> np.ndarray:
-        stacked = self.focus_stack_fn(tile_4d, k=self.config.focus_stack_kernel_size)
+    @staticmethod
+    def _iou_pair(a: Detection, b: Detection) -> float:
+        """IoU for two xyxy detections."""
+        inter_x1 = max(a.x1_px, b.x1_px)
+        inter_y1 = max(a.y1_px, b.y1_px)
+        inter_x2 = min(a.x2_px, b.x2_px)
+        inter_y2 = min(a.y2_px, b.y2_px)
 
-        if isinstance(stacked, tuple):
-            stacked = stacked[0]
+        inter_w = max(0.0, inter_x2 - inter_x1)
+        inter_h = max(0.0, inter_y2 - inter_y1)
+        inter = inter_w * inter_h
+        if inter <= 0.0:
+            return 0.0
 
-        if stacked.dtype != np.uint8:
-            stacked = np.clip(stacked, 0, 255).astype(np.uint8)
-        return stacked
+        area_a = max(0.0, a.x2_px - a.x1_px) * max(0.0, a.y2_px - a.y1_px)
+        area_b = max(0.0, b.x2_px - b.x1_px) * max(0.0, b.y2_px - b.y1_px)
+        denom = area_a + area_b - inter + 1e-7
+        return inter / denom
+
+    @staticmethod
+    def _tile_rects_overlap(a: _TileSpec, b: _TileSpec) -> bool:
+        """Check whether two tile rectangles overlap in pixel space."""
+        return not (
+            a.x + a.w <= b.x
+            or a.x >= b.x + b.w
+            or a.y + a.h <= b.y
+            or a.y >= b.y + b.h
+        )
+
+    def _iter_forward_overlap_neighbors(
+        self,
+        tile: _TileSpec,
+        tiles_by_key: dict[tuple[int, int], _TileSpec],
+    ) -> list[tuple[int, int]]:
+        """Return lexicographically forward tile keys that may overlap this tile."""
+        neighbors: list[tuple[int, int]] = []
+
+        for ny in range(tile.iy, tile.iy + self._overlap_span + 1):
+            x_start = tile.ix + 1 if ny == tile.iy else tile.ix - self._overlap_span
+            x_end = tile.ix + self._overlap_span
+            for nx in range(x_start, x_end + 1):
+                key = (ny, nx)
+                other = tiles_by_key.get(key)
+                if other is None:
+                    continue
+                if self._tile_rects_overlap(tile, other):
+                    neighbors.append(key)
+
+        return neighbors
+
+    def _deduplicate_tile_boundaries(
+        self,
+        tiles_by_key: dict[tuple[int, int], _TileSpec],
+        detections_by_tile: dict[tuple[int, int], list[Detection]],
+    ) -> list[Detection]:
+        """Deduplicate only across overlapping tile pairs in one end-of-run pass."""
+        all_detections: list[Detection] = []
+        ids_by_tile: dict[tuple[int, int], list[int]] = {}
+
+        for key in sorted(tiles_by_key):
+            dets = detections_by_tile.get(key, [])
+            ids: list[int] = []
+            for det in dets:
+                ids.append(len(all_detections))
+                all_detections.append(det)
+            ids_by_tile[key] = ids
+
+        if not all_detections:
+            return []
+
+        parent = list(range(len(all_detections)))
+        rank = [0] * len(all_detections)
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra = find(a)
+            rb = find(b)
+            if ra == rb:
+                return
+            if rank[ra] < rank[rb]:
+                parent[ra] = rb
+            elif rank[ra] > rank[rb]:
+                parent[rb] = ra
+            else:
+                parent[rb] = ra
+                rank[ra] += 1
+
+        for key in sorted(tiles_by_key):
+            tile = tiles_by_key[key]
+            ids_a = ids_by_tile.get(key, [])
+            if not ids_a:
+                continue
+
+            for nkey in self._iter_forward_overlap_neighbors(tile, tiles_by_key):
+                ids_b = ids_by_tile.get(nkey, [])
+                if not ids_b:
+                    continue
+
+                for ida in ids_a:
+                    det_a = all_detections[ida]
+                    for idb in ids_b:
+                        det_b = all_detections[idb]
+                        if not self._has_intersection(det_a, det_b):
+                            continue
+                        if self._iou_pair(det_a, det_b) > self.config.nms_iou_threshold:
+                            union(ida, idb)
+
+        best_by_component: dict[int, int] = {}
+        for det_id, det in enumerate(all_detections):
+            root = find(det_id)
+            best_id = best_by_component.get(root)
+            if best_id is None:
+                best_by_component[root] = det_id
+                continue
+            if det.score > all_detections[best_id].score:
+                best_by_component[root] = det_id
+
+        final_detections = [all_detections[idx] for idx in best_by_component.values()]
+        final_detections.sort(key=lambda d: d.score, reverse=True)
+        return final_detections
 
     def _resolve_output_paths(self) -> tuple[str, str]:
         ndpi_name = Path(self.config.ndpi_path).name
@@ -175,7 +340,17 @@ class NDPIAnnotator:
 
     def _write_csv(self, detections: list[Detection], output_csv_path: str) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(output_csv_path)), exist_ok=True)
-        fieldnames = [
+        fieldnames = self._csv_fieldnames()
+
+        with open(output_csv_path, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for det in detections:
+                writer.writerow(self._detection_to_csv_row(det))
+
+    @staticmethod
+    def _csv_fieldnames() -> list[str]:
+        return [
             "class",
             "confidence",
             "x_nm",
@@ -188,27 +363,23 @@ class NDPIAnnotator:
             "y2_px",
         ]
 
-        with open(output_csv_path, "w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            for det in detections:
-                writer.writerow(
-                    {
-                        "class": self.config.annotation_class,
-                        "confidence": float(det.score),
-                        "x_nm": float(det.x_nm),
-                        "y_nm": float(det.y_nm),
-                        "width_nm": float(det.width_nm),
-                        "height_nm": float(det.height_nm),
-                        "x1_px": float(det.x1_px),
-                        "y1_px": float(det.y1_px),
-                        "x2_px": float(det.x2_px),
-                        "y2_px": float(det.y2_px),
-                    }
-                )
+    def _detection_to_csv_row(self, det: Detection) -> dict[str, float | str]:
+        return {
+            "class": self.config.annotation_class,
+            "confidence": float(det.score),
+            "x_nm": float(det.x_nm),
+            "y_nm": float(det.y_nm),
+            "width_nm": float(det.width_nm),
+            "height_nm": float(det.height_nm),
+            "x1_px": float(det.x1_px),
+            "y1_px": float(det.y1_px),
+            "x2_px": float(det.x2_px),
+            "y2_px": float(det.y2_px),
+        }
 
     def _write_ndpa(self, detections: list[Detection], output_ndpa_path: str) -> None:
-        writer = NDPAWriter(output_path=output_ndpa_path)
+        writer = NDPAWriter(output_path=output_ndpa_path, create_if_missing=True)
+        source_note = f"source={self.config.annotation_source}; model={self.model_key}"
         for det in detections:
             writer.add_bounding_box(
                 label=self.config.annotation_class,
@@ -217,54 +388,79 @@ class NDPIAnnotator:
                 y_nm=det.y_nm,
                 width_nm=det.width_nm,
                 height_nm=det.height_nm,
+                color=self.model_config.ndpa_color,
+                details=source_note,
             )
         writer.save()
 
     def run(self) -> list[Detection]:
         """Execute the full NDPI annotation pipeline and return merged detections."""
-        tiles = self._build_tile_grid()
-        merged_detections: list[Detection] = []
-
-        for x, y, w, h in tqdm(tiles, desc="Annotating tiles", unit="tile"):
-            tile_4d = self.ndpi.get_tile(x=x, y=y, w=w, h=h, magnification=self.config.magnification)
-            tile_3d = self._focus_stack_tile(tile_4d)
-
-            boxes, scores = self.detector.predict(tile_3d)
-            if len(boxes) == 0:
-                continue
-
-            boxes, valid = self._clip_boxes_xyxy(boxes, width=w, height=h)
-            if len(boxes) == 0:
-                continue
-
-            scores = np.asarray(scores, dtype=np.float32)
-            scores = scores[valid]
-
-            for box, score in zip(boxes, scores):
-                gx1 = float(x + box[0])
-                gy1 = float(y + box[1])
-                gx2 = float(x + box[2])
-                gy2 = float(y + box[3])
-                x_nm, y_nm, width_nm, height_nm = self._to_nm_bbox(gx1, gy1, gx2, gy2)
-                merged_detections.append(
-                    Detection(
-                        x1_px=gx1,
-                        y1_px=gy1,
-                        x2_px=gx2,
-                        y2_px=gy2,
-                        score=float(score),
-                        x_nm=x_nm,
-                        y_nm=y_nm,
-                        width_nm=width_nm,
-                        height_nm=height_nm,
-                    )
-                )
-
-        final_detections = non_max_suppression(
-            detections=merged_detections,
-            iou_threshold=self.config.nms_iou_threshold,
-        )
         csv_path, ndpa_path = self._resolve_output_paths()
+        os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
+
+        tiles = self._build_tile_grid()
+        tiles_by_key: dict[tuple[int, int], _TileSpec] = {}
+        detections_by_tile: dict[tuple[int, int], list[Detection]] = {}
+
+        # Write checkpoint rows as tiles are processed; final CSV is rewritten after dedup.
+        with open(csv_path, "w", newline="") as checkpoint_file:
+            checkpoint_writer = csv.DictWriter(checkpoint_file, fieldnames=self._csv_fieldnames())
+            checkpoint_writer.writeheader()
+
+            for tile in tqdm(tiles, desc="Annotating tiles", unit="tile"):
+                key = (tile.iy, tile.ix)
+                tiles_by_key[key] = tile
+
+                x, y, w, h = tile.x, tile.y, tile.w, tile.h
+                tile_4d = self.ndpi.get_tile(x=x, y=y, w=w, h=h, magnification=self.config.magnification)
+                tile_3d = self.compress_2d(tile_4d)
+
+                boxes, scores = self.detector.predict(tile_3d)
+                if len(boxes) == 0:
+                    detections_by_tile[key] = []
+                    continue
+
+                scores = np.asarray(scores, dtype=np.float32)
+
+                order = np.argsort(scores)[::-1]
+                boxes = boxes[order]
+                scores = scores[order]
+
+                tile_candidates: list[Detection] = []
+
+                for box, score in zip(boxes, scores):
+                    gx1 = float(x + box[0])
+                    gy1 = float(y + box[1])
+                    gx2 = float(x + box[2])
+                    gy2 = float(y + box[3])
+                    x_nm, y_nm, width_nm, height_nm = self._to_nm_bbox(gx1, gy1, gx2, gy2)
+                    tile_candidates.append(
+                        Detection(
+                            x1_px=gx1,
+                            y1_px=gy1,
+                            x2_px=gx2,
+                            y2_px=gy2,
+                            score=float(score),
+                            x_nm=x_nm,
+                            y_nm=y_nm,
+                            width_nm=width_nm,
+                            height_nm=height_nm,
+                        )
+                    )
+                detections_by_tile[key] = tile_candidates
+
+                if tile_candidates:
+                    checkpoint_writer.writerows(
+                        [self._detection_to_csv_row(det) for det in tile_candidates]
+                    )
+                    checkpoint_file.flush()
+
+        final_detections = self._deduplicate_tile_boundaries(
+            tiles_by_key=tiles_by_key,
+            detections_by_tile=detections_by_tile,
+        )
+
+        # Replace checkpoint CSV with final deduplicated results.
         self._write_csv(final_detections, csv_path)
         self._write_ndpa(final_detections, ndpa_path)
         self.csv_output_path = csv_path
