@@ -2,7 +2,7 @@ import os
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
-from src.preprocessing.mip import maximum_intensity_projection
+from src.preprocessing.postprocess_tiles import maximum_intensity_projection
 
 def test_mip_on_sample(h5_path, output_dir, max_tiles=20):
     """
