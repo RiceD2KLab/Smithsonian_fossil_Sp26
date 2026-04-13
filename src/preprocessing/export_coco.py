@@ -48,17 +48,21 @@ from src.preprocessing.h5_utils import list_tile_jobs
 # Bbox filtering
 
 MINIMUM_BOX_AREA_PX: int = 16
-MINIMUM_ASPECT_RATIO: float = 0.25
+MINIMUM_CROPPED_AREA_RATIO: float = 0.25
 
-
-def _is_valid_bbox(w: float, h: float) -> bool:
-    if w <= 0 or h <= 0:
+def _is_valid_bbox(
+    cropped_w: float,
+    cropped_h: float,
+    uncropped_w: float,
+    uncropped_h: float,
+) -> bool:
+    if cropped_w <= 0 or cropped_h <= 0:
         return False
-    if w * h < MINIMUM_BOX_AREA_PX:
+    cropped_area = cropped_w * cropped_h
+    uncropped_area = uncropped_w * uncropped_h
+    if cropped_area < MINIMUM_BOX_AREA_PX:
         return False
-    if h < MINIMUM_ASPECT_RATIO * w:
-        return False
-    if w < MINIMUM_ASPECT_RATIO * h:
+    if (cropped_area / uncropped_area) <= MINIMUM_CROPPED_AREA_RATIO:
         return False
     return True
 
@@ -154,6 +158,11 @@ def _export_tile(
                 if "bboxes" in grp
                 else np.zeros((0, 4), dtype=np.float32)
             )
+            uncropped_bboxes_raw = (
+                np.array(grp["uncropped_bboxes"], dtype=np.float32)
+                if "uncropped_bboxes" in grp
+                else np.array(bboxes_raw, dtype=np.float32)
+            )
             labels_raw = (
                 np.array(grp["labels"], dtype=np.int64)
                 if "labels" in grp
@@ -164,9 +173,14 @@ def _export_tile(
         
         valid_bboxes: list[list[float]] = []
         valid_labels: list[int] = []
-        for bbox, label in zip(bboxes_raw.tolist(), labels_raw.tolist()):
+        for bbox, uncropped_bbox, label in zip(
+            bboxes_raw.tolist(),
+            uncropped_bboxes_raw.tolist(),
+            labels_raw.tolist(),
+        ):
             x, y, bw, bh = bbox
-            if not _is_valid_bbox(bw, bh):
+            _, _, ubw, ubh = uncropped_bbox
+            if not _is_valid_bbox(bw, bh, ubw, ubh):
                 continue
             # H5 labels are 1-indexed; convert to 0-indexed for rfdetr & yolo compatibility.
             cat_id = 0 if single_cls else int(label) - 1
