@@ -129,9 +129,9 @@ def generate_tiles(
         
         # For each tile, extract the image data and save it along with the annotations
         for tile_idx, (tile, anns_in_tile) in enumerate(tqdm(tile_annotations)):
-            image = ndpi_data.get_tile(*tile, magnification=magnification)
             x0, y0, w, h = tile
             bboxes = []
+            uncropped_bboxes = []
             labels = []
 
             # Standardize annotation coordinates to tile and crop to tile boundaries
@@ -147,16 +147,24 @@ def generate_tiles(
 
                 if crop_w > 0 and crop_h > 0:
                     bboxes.append([crop_x, crop_y, crop_w, crop_h])
+                    uncropped_bboxes.append([rel_x, rel_y, aw, ah])
                     labels.append(ann["label"])
 
             # Save bboxes and labels as numpy arrays, or empty arrays if no annotations
             bboxes = np.array(bboxes, dtype=np.float32) if bboxes else np.zeros((0, 4), dtype=np.float32)
+            uncropped_bboxes = (
+                np.array(uncropped_bboxes, dtype=np.float32)
+                if uncropped_bboxes
+                else np.zeros((0, 4), dtype=np.float32)
+            )
             labels = np.array(labels, dtype=np.int32) if labels else np.array([], dtype=np.int32)
 
             # Create a group for this tile and save the image and annotations
             group = h5f.create_group(f"tile_{x0}_{y0}")
+            image = ndpi_data.get_tile(*tile, magnification=magnification)
             group.create_dataset("data", data=image, compression="gzip")
             group.create_dataset("bboxes", data=bboxes, compression="gzip")
+            group.create_dataset("uncropped_bboxes", data=uncropped_bboxes, compression="gzip")
             group.create_dataset("labels", data=labels, compression="gzip")
             group.attrs["x"] = x0
             group.attrs["y"] = y0
