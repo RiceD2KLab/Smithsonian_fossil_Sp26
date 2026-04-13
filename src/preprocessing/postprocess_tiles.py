@@ -131,7 +131,7 @@ def process_h5_file(
                 )
 
                 # Keep legacy field for compatibility and write explicit metric fields.
-                _replace_dataset(group, "focal_plane_ranking", ranking_log)
+                _replace_dataset(group, "focal_plane_ranking", ranking_log) # Legacy field for compatibility
                 _replace_dataset(group, "focal_plane_ranking_LoG", ranking_log)
                 _replace_dataset(group, "focal_plane_ranking_VoL", ranking_vol)
                 _replace_dataset(group, "focal_plane_ranking_tenengrad", ranking_tenengrad)

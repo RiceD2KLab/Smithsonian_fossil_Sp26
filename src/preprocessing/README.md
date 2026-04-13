@@ -97,29 +97,29 @@ Optional:
 Run on one H5 file or a directory of H5 files:
 
 ```bash
-python -m src.preprocessing.focus_stack --input_path /path/to/h5_or_dir --outputs focus_stacked rankings
+python -m src.preprocessing.postprocess_tiles --input_path /path/to/h5_or_dir --outputs focus_stacked rankings
 ```
 
 Examples:
 
 ```bash
 # Focus stacked only
-python -m src.preprocessing.focus_stack --input_path /path/to/h5_or_dir --outputs focus_stacked
+python -m src.preprocessing.postprocess_tiles --input_path /path/to/h5_or_dir --outputs focus_stacked
 
 # Rankings only
-python -m src.preprocessing.focus_stack --input_path /path/to/h5_or_dir --outputs rankings
+python -m src.preprocessing.postprocess_tiles --input_path /path/to/h5_or_dir --outputs rankings
 
 # MIP only
-python -m src.preprocessing.focus_stack --input_path /path/to/h5_or_dir --outputs mip
+python -m src.preprocessing.postprocess_tiles --input_path /path/to/h5_or_dir --outputs mip
 
 # All supported outputs
-python -m src.preprocessing.focus_stack --input_path /path/to/h5_or_dir --outputs focus_stacked rankings mip
+python -m src.preprocessing.postprocess_tiles --input_path /path/to/h5_or_dir --outputs focus_stacked rankings mip
 ```
 
 Optional tuning:
 
 ```bash
-python -m src.preprocessing.focus_stack \
+python -m src.preprocessing.postprocess_tiles \
   --input_path /path/to/h5_or_dir \
   --outputs focus_stacked rankings \
   --log_kernel_size 5 \
@@ -153,9 +153,3 @@ python -m src.preprocessing.export_coco \
   --top_k 5 \
   --ranking_metric tenengrad
 ```
-
-## Notes
-
-- `focus_stack.py` and `mip.py` both modify H5 files in-place.
-- Existing datasets with the same name are replaced.
-- `export_coco.py` supports `LoG` fallback to `focal_plane_ranking` for compatibility when `focal_plane_ranking_LoG` is absent.
