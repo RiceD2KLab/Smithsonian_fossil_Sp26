@@ -1,9 +1,16 @@
 #!/bin/bash
 
+NDPI_PATH="/path/to/ndpi/file"
+OUTPUT_PATH="/path/to/output/directory"
+MODEL_NAME="rfdetr"  # or "yolo"
+MODEL_PATH="/path/to/model/checkpoint.pt"
+OVERLAP=0.1
+MAGNIFICATION=40
+
 python -m src.annotator.run \
-    --ndpi_path /rhf/allocations/dsci435/smithsonian_full_sp26/raw/Images_with_annotations_for_CNN_training/USNMPAL_793367_D3702_L_2024_02_02_15_49_54_Tennessee.ndpi \
-    --output_dir output \
-    --model_name yolo \
-    --checkpoint_path /scratch/pom1/yolo26/outputs/yolo26_train_run_focus_stacked/weights/best.pt \
-    --overlap 0.1 \
-    --magnification 40 \
+    --ndpi_path $NDPI_PATH \
+    --output_dir $OUTPUT_PATH \
+    --model_name $MODEL_NAME \
+    --checkpoint_path $MODEL_PATH \
+    --overlap $OVERLAP \
+    --magnification $MAGNIFICATION \
