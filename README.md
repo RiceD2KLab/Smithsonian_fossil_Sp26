@@ -1,4 +1,4 @@
-# Smithsonian_fossil_Sp26
+# Automated Detection of Palynomorphs from Digital Microscopy Slides
 
 ## Table of Contents
 

@@ -11,8 +11,11 @@ from src.annotator.detectors import MODEL_CONFIGS, ModelConfig, TileDetector, bu
 from src.annotator.types import Detection
 from src.data.ndpa_writer import NDPAWriter
 from src.data.ndpi_reader import NDPIData
-from src.preprocessing.focus_stack import best_focal_plane, focus_stack
+from src.preprocessing.postprocess_tiles import focus_stack
 
+## TO REMOVE:
+def best_focal_plane(tile_4d, k):
+    return tile_4d[:, :, :, k // 2]  # Placeholder: just take the middle plane for now.
 
 @dataclass
 class AnnotatorConfig:
