@@ -12,7 +12,6 @@ Expects a COCO export produced by export_coco.py, which writes:
 from __future__ import annotations
 
 import argparse
-import os
 from typing import Any
 
 from ultralytics import YOLO
@@ -64,6 +63,9 @@ AUG_CONFIG: dict[str, dict[str, Any]] = {
 def parse_training_arguments() -> argparse.Namespace:
     """
     Parse command-line arguments for YOLO training.
+
+    Args:
+        None
 
     Returns:
         Namespace with parsed arguments.
@@ -237,6 +239,18 @@ def build_training_overrides(
 def main() -> None:
     """
     Main entry point for YOLO26 training.
+
+    Workflow:
+        1. Parses command-line arguments.
+        2. Validates the COCO export directory structure.
+        3. Converts COCO annotations to YOLO txt format (idempotent).
+        4. Loads the YOLO model and runs model.train() with the built overrides.
+
+    Args:
+        None
+
+    Returns:
+        None
     """
 
     args = parse_training_arguments()

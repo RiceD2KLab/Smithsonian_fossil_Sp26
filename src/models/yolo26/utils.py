@@ -67,6 +67,9 @@ def convert_coco_labels_to_yolo(coco_dir: str) -> None:
 
     Args:
         coco_dir: Root directory of the COCO export produced by export_coco.py.
+
+    Returns:
+        None
     """
     coco_dir = os.path.abspath(coco_dir)
 
@@ -92,6 +95,11 @@ def convert_coco_labels_to_yolo(coco_dir: str) -> None:
 
         os.makedirs(labels_dir, exist_ok=True)
 
+        # Map COCO category_id -> 0-based YOLO class index (sorted by category_id
+        # to give a mapping that matches dataset.yaml order).
+        categories = sorted(coco.get("categories", []), key=lambda c: c["id"])
+        cat_id_to_yolo: dict[int, int] = {cat["id"]: idx for idx, cat in enumerate(categories)}
+
         # Build image_id -> (file_name, width, height)
         id_to_image: dict[int, tuple[str, int, int]] = {
             img["id"]: (img["file_name"], img["width"], img["height"])
@@ -113,7 +121,7 @@ def convert_coco_labels_to_yolo(coco_dir: str) -> None:
             lines = []
             for ann in anns_by_image.get(img_id, []):
                 x, y, w, h = ann["bbox"]
-                class_id = ann["category_id"]
+                class_id = cat_id_to_yolo[ann["category_id"]]
                 cx = (x + w / 2) / img_w
                 cy = (y + h / 2) / img_h
                 nw = w / img_w
@@ -129,6 +137,16 @@ def convert_coco_labels_to_yolo(coco_dir: str) -> None:
 def validate_coco_dir(coco_dir: str) -> None:
     """
     Validate that the COCO export directory has the expected structure.
+
+    Args:
+        coco_dir: Root directory of the COCO export produced by export_coco.py.
+
+    Returns:
+        None
+
+    Raises:
+        FileNotFoundError: If coco_dir does not exist or if dataset.yaml is
+            not found within it (suggesting export_coco.py has not been run).
     """
     if not os.path.isdir(coco_dir):
         raise FileNotFoundError(f"coco_dir not found: {coco_dir}")
