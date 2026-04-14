@@ -100,8 +100,6 @@ def _export_tile(
     image_format: str,
     single_cls: bool,
     filter_bboxes: bool,
-    minimum_box_area_px: Optional[int],
-    minimum_aspect_ratio: Optional[float],
 ) -> list[dict]:
     """
     Extract image(s) for one tile and write them to split_dir.
@@ -184,7 +182,7 @@ def _export_tile(
         ):
             x, y, bw, bh = bbox
             _, _, ubw, ubh = uncropped_bbox
-            if not _is_valid_bbox(bw, bh, ubw, ubh):
+            if filter_bboxes and not _is_valid_bbox(bw, bh, ubw, ubh):
                 continue
             # H5 labels are 1-indexed; convert to 0-indexed for rfdetr & yolo compatibility.
             cat_id = 0 if single_cls else int(label) - 1
@@ -294,8 +292,6 @@ def run(
     single_cls: bool,
     metadata_json: Optional[str],
     filter_bboxes: bool,
-    minimum_box_area_px: Optional[int],
-    minimum_aspect_ratio: Optional[float],
 ) -> None:
     # 1. Discover tiles and partition them by split
     all_tiles = list_tile_jobs(h5_root)
@@ -346,7 +342,7 @@ def run(
                     _export_tile,
                     h5_path, group_name, image_stem,
                     split_img_dir, mode, image_format, single_cls,
-                    filter_bboxes, minimum_box_area_px or 0, minimum_aspect_ratio or 0,
+                    filter_bboxes,
                 ): (image_stem, group_name)
                 for h5_path, image_stem, group_name in tiles
             }
@@ -473,20 +469,6 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Filter bboxes based on area and aspect ratio",
     )
-    parser.add_argument(
-        "--minimum_box_area_px",
-        type=int,
-        required=False,
-        default=16,
-        help="Minimum area of a bounding box in pixels",
-    )
-    parser.add_argument(
-        "--minimum_aspect_ratio",
-        type=float,
-        required=False,
-        default=0.25,
-        help="Minimum aspect ratio of a bounding box",
-    )
     return parser.parse_args()
 
 
@@ -503,8 +485,6 @@ def main() -> None:
         single_cls=args.single_cls,
         metadata_json=args.metadata_json,
         filter_bboxes=args.filter_bboxes,
-        minimum_box_area_px=args.minimum_box_area_px,
-        minimum_aspect_ratio=args.minimum_aspect_ratio,
     )
 
 
