@@ -1,13 +1,29 @@
-"""Validated configuration objects for the annotator pipeline."""
+"""Configuration objects and validation for the annotator pipeline.
+
+This module defines immutable-style dataclasses that carry model metadata and
+runtime settings for the NDPI annotation workflow.
+"""
 
 import os
 from dataclasses import dataclass
 
-from src.annotator.detectors import MODEL_CONFIGS, ModelConfig
+@dataclass
+class ModelConfig:
+    """Static model configuration used throughout the annotator pipeline."""
+
+    key: str # Unique model name, e.g. "yolo" or "rfdetr".
+    tile_size: int # Tile size in pixels for model inference, e.g. 1024 or 1008.
+    ndpa_color: str # Color of output NDPA annotations for this model, e.g. "#ff0000" or "#00ff00".
+
+# Predefined static configs for supported model families.
+MODEL_CONFIGS: dict[str, ModelConfig] = {
+    "yolo": ModelConfig(key="yolo", tile_size=1024, ndpa_color="#ff0000"),
+    "rfdetr": ModelConfig(key="rfdetr", tile_size=1008, ndpa_color="#00ff00"),
+}
 
 @dataclass
 class AnnotatorConfig:
-    """Configuration for end-to-end NDPI annotation."""
+    """Runtime configuration for end-to-end NDPI annotation."""
 
     ndpi_path: str
     output_dir: str
@@ -23,27 +39,31 @@ class AnnotatorConfig:
     annotation_class: str = "paly"
 
     @property
-    def model_key(self) -> str:
-        """Return the normalized model identifier."""
-        return self.model_name.lower().strip()
-
-    @property
     def model_config(self) -> ModelConfig:
         """Return the static model config for the selected model family."""
-        return MODEL_CONFIGS[self.model_key]
+        return MODEL_CONFIGS[self.model_name]
 
     @property
     def tile_size(self) -> int:
-        """Return the tile size required by the selected detector."""
+        """Return the detector tile size for the configured model."""
         return self.model_config.tile_size
 
     def validate(self) -> None:
-        """Validate filesystem paths and parameter ranges."""
+        """
+        Validate configuration paths and parameter ranges.
+
+        Raises:
+            FileNotFoundError: If `ndpi_path` or `checkpoint_path` does not
+                exist.
+            ValueError: If any numeric threshold/range is invalid, if
+                `output_dir` is empty, or if compression/kernel parameters are
+                unsupported.
+        """
         if not os.path.isfile(self.ndpi_path):
             raise FileNotFoundError(f"NDPI file not found: {self.ndpi_path}")
         if not os.path.isfile(self.checkpoint_path):
             raise FileNotFoundError(f"Checkpoint file not found: {self.checkpoint_path}")
-        _ = self.model_key
+        _ = self.model_name
         if not self.output_dir:
             raise ValueError("output_dir must be a non-empty path.")
         if not (0.0 <= self.overlap < 1.0):

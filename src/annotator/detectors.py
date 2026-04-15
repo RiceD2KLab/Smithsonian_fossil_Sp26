@@ -1,4 +1,6 @@
-"""Model adapters and box sanitation helpers for tile-level detection."""
+"""
+This module provides model-specific detector wrappers behind a shared protocol.
+"""
 
 from dataclasses import dataclass
 from typing import Protocol
@@ -6,26 +8,27 @@ from typing import Protocol
 import cv2
 import numpy as np
 
-@dataclass
-class ModelConfig:
-    """Static model configuration used throughout the annotator pipeline."""
-
-    key: str # Unique model name, e.g. "yolo" or "rfdetr".
-    tile_size: int # Tile size in pixels for model inference, e.g. 1024 or 1008.
-    ndpa_color: str # Color of output NDPA annotations for this model, e.g. "#ff0000" or "#00ff00".
-
-MODEL_CONFIGS: dict[str, ModelConfig] = {
-    "yolo": ModelConfig(key="yolo", tile_size=1024, ndpa_color="#ff0000"),
-    "rfdetr": ModelConfig(key="rfdetr", tile_size=1008, ndpa_color="#00ff00"),
-}
-
 def sanitize_boxes(
     boxes: np.ndarray,
     scores: np.ndarray,
     width: int,
     height: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Clip boxes to tile bounds and remove degenerate boxes."""
+    """
+    Clip predicted boxes to image bounds and remove invalid boxes.
+
+    Args:
+        boxes: Predicted boxes in `xyxy` format. Can be any array-like object
+            convertible to shape `N x 4`.
+        scores: Confidence scores aligned with `boxes`.
+        width: Tile width in pixels.
+        height: Tile height in pixels.
+
+    Returns:
+        A tuple `(boxes_xyxy, scores)` where boxes are clipped to
+        `[0, width] x [0, height]` and only boxes with positive area are kept.
+        Returned arrays use `float32` dtype.
+    """
     boxes_np = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
     scores_np = np.asarray(scores, dtype=np.float32).reshape(-1)
 
@@ -46,14 +49,28 @@ def sanitize_boxes(
     return clipped[valid], scores_np[valid]
 
 class TileDetector(Protocol):
-    """Interface for tile-level detection models."""
+    """
+    Protocol for tile-level detection model adapters.
+
+    Implementations accept an RGB tile and return bounding boxes with
+    confidence scores.
+    """
 
     def predict(self, tile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return `(boxes_xyxy, scores)` for a single tile."""
+        """
+        Run inference on a single tile.
+
+        Args:
+            tile: Input RGB image tile as a NumPy array.
+
+        Returns:
+            A tuple `(boxes_xyxy, scores)` where boxes are shape `N x 4` in
+            pixel `xyxy` coordinates and scores are shape `N`.
+        """
         ...
 
 class YOLOTileDetector(TileDetector):
-    """Tile detector wrapper for Ultralytics YOLO."""
+    """Tile detector adapter for Ultralytics YOLO checkpoints."""
 
     def __init__(
         self,
@@ -61,7 +78,17 @@ class YOLOTileDetector(TileDetector):
         confidence_threshold: float,
         tile_size: int,
     ) -> None:
-        """Load the YOLO checkpoint and store inference parameters."""
+        """
+        Initialize a YOLO detector adapter.
+
+        Args:
+            checkpoint_path: Path to the YOLO checkpoint file.
+            confidence_threshold: Minimum confidence score for detections.
+            tile_size: Input image size used for YOLO inference.
+
+        Returns:
+            None.
+        """
         from ultralytics import YOLO
 
         self.model = YOLO(checkpoint_path)
@@ -69,7 +96,16 @@ class YOLOTileDetector(TileDetector):
         self.imgsz = tile_size
 
     def predict(self, tile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Run YOLO on a tile and return sanitized xyxy boxes plus scores."""
+        """
+        Run YOLO inference on one tile.
+
+        Args:
+            tile: Input RGB tile as a NumPy array with shape `H x W x C`.
+
+        Returns:
+            A tuple `(boxes_xyxy, scores)` where boxes are sanitized `float32`
+            `xyxy` coordinates and scores are `float32` confidences.
+        """
         tile_bgr = cv2.cvtColor(tile, cv2.COLOR_RGB2BGR)
         h, w = tile.shape[:2]
         results = self.model.predict(
@@ -89,7 +125,7 @@ class YOLOTileDetector(TileDetector):
 
 
 class RFDETRTileDetector(TileDetector):
-    """Tile detector wrapper for RF-DETR."""
+    """Tile detector adapter for RF-DETR checkpoints."""
 
     def __init__(
         self,
@@ -97,7 +133,20 @@ class RFDETRTileDetector(TileDetector):
         confidence_threshold: float,
         tile_size: int,
     ) -> None:
-        """Load the RF-DETR checkpoint and prepare it for inference."""
+        """
+        Initialize an RF-DETR detector adapter.
+
+        Args:
+            checkpoint_path: Path to RF-DETR pretrained weights.
+            confidence_threshold: Minimum confidence score for detections.
+            tile_size: Input resolution passed to RF-DETR.
+
+        Returns:
+            None.
+
+        Raises:
+            ValueError: If the RF-DETR base model class is not available.
+        """
         from src.models.rfdetr.train import _MODEL_CLASSES
 
         model_cls = _MODEL_CLASSES.get("base")
@@ -113,7 +162,16 @@ class RFDETRTileDetector(TileDetector):
         self.confidence_threshold = confidence_threshold
 
     def predict(self, tile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Run RF-DETR on a tile and return sanitized xyxy boxes plus scores."""
+        """
+        Run RF-DETR inference on one tile.
+
+        Args:
+            tile: Input RGB tile as a NumPy array with shape `H x W x C`.
+
+        Returns:
+            A tuple `(boxes_xyxy, scores)` where boxes are sanitized `float32`
+            `xyxy` coordinates and scores are `float32` confidences.
+        """
         tile_bgr = cv2.cvtColor(tile, cv2.COLOR_RGB2BGR)
         h, w = tile.shape[:2]
         detections = self.model.predict(tile_bgr, threshold=self.confidence_threshold)
@@ -138,7 +196,21 @@ def build_detector(
     confidence_threshold: float,
     tile_size: int,
 ) -> TileDetector:
-    """Create a detector adapter for the requested model family."""
+    """
+    Construct a detector adapter for a supported model family.
+
+    Args:
+        model_name: Model family key. Supported values are `yolo` and `rfdetr`.
+        checkpoint_path: Path to model weights.
+        confidence_threshold: Minimum confidence score for detections.
+        tile_size: Input tile size for model inference.
+
+    Returns:
+        A detector implementing the :class:`TileDetector` protocol.
+
+    Raises:
+        ValueError: If `model_name` is not supported.
+    """
     if model_name == "yolo":
         return YOLOTileDetector(
             checkpoint_path=checkpoint_path,
