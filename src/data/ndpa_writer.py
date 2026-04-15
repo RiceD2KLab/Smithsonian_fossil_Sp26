@@ -3,7 +3,7 @@ import xml.etree.ElementTree as ET
 
 
 class NDPAWriter:
-    """Write NDPA annotations in XML format with rectangle freehand entries."""
+    """Write NDPA annotations in XML format with rectangle freehand or circle entries."""
 
     def __init__(self, output_path: str) -> None:
         self.output_path = output_path

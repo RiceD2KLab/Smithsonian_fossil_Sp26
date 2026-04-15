@@ -147,8 +147,9 @@ NDPA format:
 - `lens` = magnification
 - `x`, `y` = bbox center in nanometers
 - `z` = `0`
-- Rectangle corners stored under `annotation/pointlist/point`
+- Circle center/radius stored under `annotation/x`, `annotation/y`, and `annotation/radius`
 - `annotation/@color` is model-specific (YOLO red, RF-DETR green)
+- `details` stores per-annotation metadata in the form `source=<model>; confidence=<score>`
 
 If the NDPA file already exists, new annotations are appended. If it does not exist, an empty NDPA file is created first. This allows running YOLO and RF-DETR sequentially into the same NDPA file.
 
@@ -191,11 +192,10 @@ Required:
 - `--magnification`
 
 Common optional:
-- `--confidence_threshold` (default `0.25`)
+- `--confidence_threshold` (default `0.5`)
 - `--nms_iou_threshold` (default `0.5`)
 - `--compression_method` in `{focus_stack, best_focal_plane}`
 - `--annotation_class` (default `paly`)
-- `--annotation_source` (default `model`)
 - `--focus_stack_kernel_size` (default `5`)
 
 ## Programmatic Usage

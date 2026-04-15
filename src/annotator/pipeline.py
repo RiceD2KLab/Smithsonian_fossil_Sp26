@@ -8,7 +8,7 @@ import numpy as np
 from tqdm import tqdm
 
 from src.annotator.detectors import MODEL_CONFIGS, ModelConfig, TileDetector, build_detector
-from src.annotator.types import Detection
+from src.annotator.nms import TileSpec, deduplicate_tile_boundaries
 from src.data.ndpa_writer import NDPAWriter
 from src.data.ndpi_reader import NDPIData
 from src.preprocessing.postprocess_tiles import focus_stack
@@ -27,12 +27,11 @@ class AnnotatorConfig:
     checkpoint_path: str
     overlap: float
     magnification: float
-    confidence_threshold: float = 0.25
+    confidence_threshold: float = 0.5
     nms_iou_threshold: float = 0.5
     compression_method: str = "focus_stack"
     focus_stack_kernel_size: int = 5
     annotation_class: str = "paly"
-    annotation_source: str = "model"
 
     @property
     def model_key(self) -> str:
@@ -65,18 +64,19 @@ class AnnotatorConfig:
         if self.compression_method not in {"focus_stack", "best_focal_plane"}:
             raise ValueError("compression_method must be one of: focus_stack, best_focal_plane.")
 
-
 @dataclass
-class _TileSpec:
-    """Grid tile coordinates with both pixel origin and grid index."""
+class Detection:
+    """Single detection in both pixel and physical-coordinate spaces."""
 
-    x: int
-    y: int
-    w: int
-    h: int
-    ix: int
-    iy: int
-
+    x1_px: float
+    y1_px: float
+    x2_px: float
+    y2_px: float
+    score: float
+    x_nm: float
+    y_nm: float
+    width_nm: float
+    height_nm: float
 
 def resolve_compress_2d(
     method: str,
@@ -84,7 +84,6 @@ def resolve_compress_2d(
 ) -> Callable[[np.ndarray], np.ndarray]:
     """Resolve a tile-compression method string to a callable compress_2d(tile_4d)."""
     method_key = method.strip().lower()
-
     if method_key == "focus_stack":
         def compress_2d(tile_4d: np.ndarray) -> np.ndarray:
             stacked = focus_stack(tile_4d, k=kernel_size)
@@ -106,7 +105,6 @@ def resolve_compress_2d(
         return compress_2d
 
     raise ValueError("Unsupported compression method. Choose 'focus_stack' or 'best_focal_plane'.")
-
 
 class NDPIAnnotator:
     """Pipeline that annotates a full NDPI slide and writes merged CSV and NDPA output."""
@@ -132,6 +130,8 @@ class NDPIAnnotator:
             tile_size=self.model_config.tile_size,
         )
 
+        # Conversion factors for pixel to physical space based on NDPI metadata 
+        # and config magnification.
         self._nm_per_px_40x = self.ndpi.metadata.mpp_x * 1000.0
         self._nm_per_px = self._nm_per_px_40x * (
             self.ndpi.metadata.objective_power / self.config.magnification
@@ -142,9 +142,10 @@ class NDPIAnnotator:
         self._origin_y_nm = self.ndpi.metadata.y_offset_nm - (
             self.ndpi.metadata.full_height / 2.0
         ) * self._nm_per_px_40x
+
         self._tile_stride = max(1, int(round(self.config.tile_size * (1.0 - self.config.overlap))))
         # Number of tile-index steps that can still overlap at current stride.
-        self._overlap_span = max(0, (self.config.tile_size - 1) // self._tile_stride)
+        self._overlap_span = max(0, (self.config.tile_size + self._tile_stride - 1) // self._tile_stride)
         self.csv_output_path: str | None = None
         self.ndpa_output_path: str | None = None
 
@@ -176,17 +177,17 @@ class NDPIAnnotator:
             positions.append(last)
         return positions
 
-    def _build_tile_grid(self) -> list[_TileSpec]:
+    def _build_tile_grid(self) -> list[TileSpec]:
         image_w, image_h = self._image_size_at_magnification()
         tile_size = self.config.tile_size
         stride = self._tile_stride
 
         xs = self._axis_positions(image_w, tile_size, stride)
         ys = self._axis_positions(image_h, tile_size, stride)
-        tiles: list[_TileSpec] = []
+        tiles: list[TileSpec] = []
         for iy, y in enumerate(ys):
             for ix, x in enumerate(xs):
-                tiles.append(_TileSpec(x=x, y=y, w=tile_size, h=tile_size, ix=ix, iy=iy))
+                tiles.append(TileSpec(x=x, y=y, w=tile_size, h=tile_size, ix=ix, iy=iy))
         return tiles
 
     def _to_nm_bbox(self, x1_px: float, y1_px: float, x2_px: float, y2_px: float) -> tuple[float, float, float, float]:
@@ -196,151 +197,6 @@ class NDPIAnnotator:
         height_nm = max(y2_px - y1_px, 0.0) * self._nm_per_px
         return x_nm, y_nm, width_nm, height_nm
 
-    @staticmethod
-    def _has_intersection(a: Detection, b: Detection) -> bool:
-        """Fast rectangle intersection test before IoU."""
-        return not (
-            a.x2_px <= b.x1_px
-            or a.x1_px >= b.x2_px
-            or a.y2_px <= b.y1_px
-            or a.y1_px >= b.y2_px
-        )
-
-    @staticmethod
-    def _iou_pair(a: Detection, b: Detection) -> float:
-        """IoU for two xyxy detections."""
-        inter_x1 = max(a.x1_px, b.x1_px)
-        inter_y1 = max(a.y1_px, b.y1_px)
-        inter_x2 = min(a.x2_px, b.x2_px)
-        inter_y2 = min(a.y2_px, b.y2_px)
-
-        inter_w = max(0.0, inter_x2 - inter_x1)
-        inter_h = max(0.0, inter_y2 - inter_y1)
-        inter = inter_w * inter_h
-        if inter <= 0.0:
-            return 0.0
-
-        area_a = max(0.0, a.x2_px - a.x1_px) * max(0.0, a.y2_px - a.y1_px)
-        area_b = max(0.0, b.x2_px - b.x1_px) * max(0.0, b.y2_px - b.y1_px)
-        denom = area_a + area_b - inter + 1e-7
-        return inter / denom
-
-    @staticmethod
-    def _tile_rects_overlap(a: _TileSpec, b: _TileSpec) -> bool:
-        """Check whether two tile rectangles overlap in pixel space."""
-        return not (
-            a.x + a.w <= b.x
-            or a.x >= b.x + b.w
-            or a.y + a.h <= b.y
-            or a.y >= b.y + b.h
-        )
-
-    def _iter_forward_overlap_neighbors(
-        self,
-        tile: _TileSpec,
-        tiles_by_key: dict[tuple[int, int], _TileSpec],
-    ) -> list[tuple[int, int]]:
-        """Return lexicographically forward tile keys that may overlap this tile."""
-        neighbors: list[tuple[int, int]] = []
-
-        for ny in range(tile.iy, tile.iy + self._overlap_span + 1):
-            x_start = tile.ix + 1 if ny == tile.iy else tile.ix - self._overlap_span
-            x_end = tile.ix + self._overlap_span
-            for nx in range(x_start, x_end + 1):
-                key = (ny, nx)
-                other = tiles_by_key.get(key)
-                if other is None:
-                    continue
-                if self._tile_rects_overlap(tile, other):
-                    neighbors.append(key)
-
-        return neighbors
-
-    def _deduplicate_tile_boundaries(
-        self,
-        tiles_by_key: dict[tuple[int, int], _TileSpec],
-        detections_by_tile: dict[tuple[int, int], list[Detection]],
-    ) -> list[Detection]:
-        """Deduplicate only across overlapping tile pairs in one end-of-run pass."""
-        all_detections: list[Detection] = []
-        ids_by_tile: dict[tuple[int, int], list[int]] = {}
-
-        for key in sorted(tiles_by_key):
-            dets = detections_by_tile.get(key, [])
-            ids: list[int] = []
-            for det in dets:
-                ids.append(len(all_detections))
-                all_detections.append(det)
-            ids_by_tile[key] = ids
-
-        if not all_detections:
-            return []
-
-        parent = list(range(len(all_detections)))
-        rank = [0] * len(all_detections)
-
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a: int, b: int) -> None:
-            ra = find(a)
-            rb = find(b)
-            if ra == rb:
-                return
-            if rank[ra] < rank[rb]:
-                parent[ra] = rb
-            elif rank[ra] > rank[rb]:
-                parent[rb] = ra
-            else:
-                parent[rb] = ra
-                rank[ra] += 1
-
-        for key in sorted(tiles_by_key):
-            tile = tiles_by_key[key]
-            ids_a = ids_by_tile.get(key, [])
-            if not ids_a:
-                continue
-
-            for nkey in self._iter_forward_overlap_neighbors(tile, tiles_by_key):
-                ids_b = ids_by_tile.get(nkey, [])
-                if not ids_b:
-                    continue
-
-                for ida in ids_a:
-                    det_a = all_detections[ida]
-                    for idb in ids_b:
-                        det_b = all_detections[idb]
-                        if not self._has_intersection(det_a, det_b):
-                            continue
-                        if self._iou_pair(det_a, det_b) > self.config.nms_iou_threshold:
-                            union(ida, idb)
-
-        best_by_component: dict[int, int] = {}
-        for det_id, det in enumerate(all_detections):
-            root = find(det_id)
-            best_id = best_by_component.get(root)
-            if best_id is None:
-                best_by_component[root] = det_id
-                continue
-            if det.score > all_detections[best_id].score:
-                best_by_component[root] = det_id
-
-        final_detections = [all_detections[idx] for idx in best_by_component.values()]
-        final_detections.sort(key=lambda d: d.score, reverse=True)
-        return final_detections
-
-    def _resolve_output_paths(self) -> tuple[str, str]:
-        ndpi_name = Path(self.config.ndpi_path).name
-        ndpi_stem = ndpi_name[: -len(".ndpi")] if ndpi_name.lower().endswith(".ndpi") else Path(ndpi_name).stem
-
-        output_dir = os.path.abspath(self.config.output_dir)
-        csv_path = os.path.join(output_dir, f"{ndpi_stem}.csv")
-        ndpa_path = os.path.join(output_dir, f"{ndpi_name}.ndpa")
-        return csv_path, ndpa_path
-
     def _write_csv(self, detections: list[Detection], output_csv_path: str) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(output_csv_path)), exist_ok=True)
         fieldnames = self._csv_fieldnames()
@@ -349,7 +205,20 @@ class NDPIAnnotator:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             for det in detections:
-                writer.writerow(self._detection_to_csv_row(det))
+                writer.writerow(
+                    {
+                        "class": self.config.annotation_class,
+                        "confidence": float(det.score),
+                        "x_nm": float(det.x_nm),
+                        "y_nm": float(det.y_nm),
+                        "width_nm": float(det.width_nm),
+                        "height_nm": float(det.height_nm),
+                        "x1_px": float(det.x1_px),
+                        "y1_px": float(det.y1_px),
+                        "x2_px": float(det.x2_px),
+                        "y2_px": float(det.y2_px),
+                    }
+                )
 
     @staticmethod
     def _csv_fieldnames() -> list[str]:
@@ -366,25 +235,11 @@ class NDPIAnnotator:
             "y2_px",
         ]
 
-    def _detection_to_csv_row(self, det: Detection) -> dict[str, float | str]:
-        return {
-            "class": self.config.annotation_class,
-            "confidence": float(det.score),
-            "x_nm": float(det.x_nm),
-            "y_nm": float(det.y_nm),
-            "width_nm": float(det.width_nm),
-            "height_nm": float(det.height_nm),
-            "x1_px": float(det.x1_px),
-            "y1_px": float(det.y1_px),
-            "x2_px": float(det.x2_px),
-            "y2_px": float(det.y2_px),
-        }
-
     def _write_ndpa(self, detections: list[Detection], output_ndpa_path: str) -> None:
-        writer = NDPAWriter(output_path=output_ndpa_path, create_if_missing=True)
-        source_note = f"source={self.config.annotation_source}; model={self.model_key}"
+        writer = NDPAWriter(output_path=output_ndpa_path)
         for det in detections:
-            writer.add_bounding_box(
+            details = f"source={self.model_key}; confidence={float(det.score):.6f}"
+            writer.add_circle(
                 label=self.config.annotation_class,
                 lens=self.config.magnification,
                 x_nm=det.x_nm,
@@ -392,51 +247,65 @@ class NDPIAnnotator:
                 width_nm=det.width_nm,
                 height_nm=det.height_nm,
                 color=self.model_config.ndpa_color,
-                details=source_note,
+                details=details,
             )
         writer.save()
 
     def run(self) -> list[Detection]:
         """Execute the full NDPI annotation pipeline and return merged detections."""
-        csv_path, ndpa_path = self._resolve_output_paths()
-        os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
-
+        
+        # Get name of image (minus extension)
+        image_name = Path(self.config.ndpi_path).name.strip(".ndpi")
+        
+        # Get NDPA and CSV output paths ready
+        output_dir = os.path.abspath(self.config.output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        csv_path = os.path.join(output_dir, f"{image_name}.csv")
+        ndpa_path = os.path.join(output_dir, f"{image_name}.ndpa")
+        
+        # Build the tile grid
         tiles = self._build_tile_grid()
-        tiles_by_key: dict[tuple[int, int], _TileSpec] = {}
+        
+        # Key data structures for merging:
+        tiles_by_key: dict[tuple[int, int], TileSpec] = {}
         detections_by_tile: dict[tuple[int, int], list[Detection]] = {}
 
-        # Write checkpoint rows as tiles are processed; final CSV is rewritten after dedup.
+        # Write checkpoint rows as tiles are processed; final CSV is rewritten after deduplication.
         with open(csv_path, "w", newline="") as checkpoint_file:
+            
             checkpoint_writer = csv.DictWriter(checkpoint_file, fieldnames=self._csv_fieldnames())
             checkpoint_writer.writeheader()
 
             for tile in tqdm(tiles, desc="Annotating tiles", unit="tile"):
+                
+                # Store tile spec for merging later.
                 key = (tile.iy, tile.ix)
                 tiles_by_key[key] = tile
 
+                # Read tile, compress to 2D, and run detector.
                 x, y, w, h = tile.x, tile.y, tile.w, tile.h
-                tile_4d = self.ndpi.get_tile(x=x, y=y, w=w, h=h, magnification=self.config.magnification)
-                tile_3d = self.compress_2d(tile_4d)
-
-                boxes, scores = self.detector.predict(tile_3d)
+                tile_3d = self.ndpi.get_tile(x=x, y=y, w=w, h=h, magnification=self.config.magnification)
+                tile_2d = self.compress_2d(tile_3d)
+                boxes, scores = self.detector.predict(tile_2d)
+                
+                # If no detections, record empty list and continue.
                 if len(boxes) == 0:
                     detections_by_tile[key] = []
                     continue
 
-                scores = np.asarray(scores, dtype=np.float32)
-
-                order = np.argsort(scores)[::-1]
-                boxes = boxes[order]
-                scores = scores[order]
-
                 tile_candidates: list[Detection] = []
-
                 for box, score in zip(boxes, scores):
+
+                    # Convert box coordinates from tile-local to global pixel space.
                     gx1 = float(x + box[0])
                     gy1 = float(y + box[1])
                     gx2 = float(x + box[2])
                     gy2 = float(y + box[3])
+
+                    # Convert global pixel coordinates to physical space.
                     x_nm, y_nm, width_nm, height_nm = self._to_nm_bbox(gx1, gy1, gx2, gy2)
+                    
+                    # Create Detection object and add to tile candidates.
                     tile_candidates.append(
                         Detection(
                             x1_px=gx1,
@@ -450,17 +319,22 @@ class NDPIAnnotator:
                             height_nm=height_nm,
                         )
                     )
+                
+                # Store candidates for this tile for later merging.
                 detections_by_tile[key] = tile_candidates
 
+                # Optionally write tile candidates to checkpoint CSV immediately for checkpointing; will be rewritten after deduplication.
                 if tile_candidates:
                     checkpoint_writer.writerows(
                         [self._detection_to_csv_row(det) for det in tile_candidates]
                     )
                     checkpoint_file.flush()
 
-        final_detections = self._deduplicate_tile_boundaries(
+        final_detections = deduplicate_tile_boundaries(
             tiles_by_key=tiles_by_key,
             detections_by_tile=detections_by_tile,
+            iou_threshold=self.config.nms_iou_threshold,
+            overlap_span=self._overlap_span,
         )
 
         # Replace checkpoint CSV with final deduplicated results.

@@ -1,9 +1,5 @@
-from __future__ import annotations
-
 import argparse
-
 from src.annotator.pipeline import AnnotatorConfig, NDPIAnnotator
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -18,7 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model_name",
         required=True,
-        choices=["yolo", "rfdetr", "rf-detr"],
+        choices=["yolo", "rfdetr"],
         help="Model family to use for tile inference.",
     )
     parser.add_argument("--checkpoint_path", required=True, help="Path to model checkpoint.")
@@ -37,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--confidence_threshold",
         type=float,
-        default=0.25,
+        default=0.5,
         help="Minimum confidence for model detections.",
     )
     parser.add_argument(
@@ -63,11 +59,6 @@ def parse_args() -> argparse.Namespace:
         default="paly",
         help="Class label written to every CSV row.",
     )
-    parser.add_argument(
-        "--annotation_source",
-        default="model",
-        help="Source note for NDPA details (e.g. model, human, review).",
-    )
     return parser.parse_args()
 
 
@@ -85,7 +76,6 @@ def main() -> None:
         compression_method=args.compression_method,
         focus_stack_kernel_size=args.focus_stack_kernel_size,
         annotation_class=args.annotation_class,
-        annotation_source=args.annotation_source,
     )
 
     annotator = NDPIAnnotator(config)

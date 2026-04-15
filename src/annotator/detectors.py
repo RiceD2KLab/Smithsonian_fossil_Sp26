@@ -1,6 +1,4 @@
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 
 import cv2
@@ -141,8 +139,8 @@ class RFDETRTileDetector (TileDetector):
             scores_np = np.ones(len(boxes_np), dtype=np.float32)
         else:
             scores_np = np.asarray(scores, dtype=np.float32)
-        return boxes_np, scores_np
-        # return sanitize_boxes(boxes_np, scores_np, width=w, height=h)
+        
+        return sanitize_boxes(boxes_np, scores_np, width=w, height=h)
 
 def build_detector(
     model_name: str,
