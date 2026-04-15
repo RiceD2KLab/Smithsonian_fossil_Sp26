@@ -7,7 +7,7 @@ MODEL_PATH="/path/to/model/checkpoint.pt"
 OVERLAP=0.1
 MAGNIFICATION=40
 
-python -m src.annotator.run \
+python -m src.annotator \
     --ndpi_path $NDPI_PATH \
     --output_dir $OUTPUT_PATH \
     --model_name $MODEL_NAME \
