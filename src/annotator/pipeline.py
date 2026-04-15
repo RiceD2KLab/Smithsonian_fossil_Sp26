@@ -1,4 +1,9 @@
-"""End-to-end NDPI annotation pipeline."""
+"""
+End-to-end NDPI annotation pipeline.
+
+This module orchestrates tile extraction, tile compression, model inference,
+cross-tile deduplication, and export to CSV and NDPA outputs.
+"""
 
 import csv
 import os
@@ -28,13 +33,28 @@ CSV_FIELDNAMES = [
 ]
 
 class NDPIAnnotator:
-    """Pipeline that annotates a full NDPI slide and writes merged CSV and NDPA output."""
+    """Run end-to-end annotation for one NDPI slide.
+
+    Args:
+        config: Validated annotator configuration describing the input slide,
+            model, tile settings, and output options.
+
+    Returns:
+        An `NDPIAnnotator` instance configured to annotate one slide.
+    """
 
     def __init__(
         self,
         config: AnnotatorConfig,
     ) -> None:
-        """Initialize the pipeline with configuration, metadata, and detector state."""
+        """
+        Initialize the pipeline with configuration, metadata, and detector state.
+
+        Args:
+            config: Annotator configuration for the run.
+
+        Throws error if configuration is invalid.
+        """
         config.validate()
         self.config = config
         self.ndpi = NDPIData(config.ndpi_path)
@@ -50,12 +70,19 @@ class NDPIAnnotator:
             tile_size=config.model_config.tile_size,
         )
 
-        # Number of tile-index steps that can still overlap at current stride.
-        self._overlap_span = max(0, (self.config.tile_size + self._tile_stride - 1) // self._tile_stride)
-
     @staticmethod
     def _axis_positions(length: int, tile_size: int, stride: int) -> list[int]:
-        """Return tile origins that cover one image axis."""
+        """
+        Return tile origins that cover one image axis.
+
+        Args:
+            length: Axis length in pixels.
+            tile_size: Tile edge length in pixels.
+            stride: Step size between adjacent tile origins in pixels.
+
+        Returns:
+            A list of tile origin coordinates that fully cover the axis.
+        """
         if length <= tile_size:
             return [0]
 
@@ -66,7 +93,12 @@ class NDPIAnnotator:
         return positions
 
     def _build_tile_grid(self) -> list[TileSpec]:
-        """Build the tile grid that covers the slide at the target magnification."""
+        """
+        Build the tile grid that covers the slide at the target magnification.
+        
+        Returns:
+            A list of `TileSpec` objects covering the slide in scan order.
+        """
         image_w, image_h = self.ndpi.get_image_size_at_magnification(self.config.magnification)
         tile_size = self.config.tile_size
         stride =  max(1, int(round(tile_size * (1.0 - self.config.overlap))))
@@ -78,19 +110,17 @@ class NDPIAnnotator:
             for ix, x in enumerate(xs):
                 tiles.append(TileSpec(x=x, y=y, w=tile_size, h=tile_size, ix=ix, iy=iy))
         return tiles
-
-    def _write_csv(self, detections: list[Detection], output_csv_path: str) -> None:
-        """Write detections to a CSV file using the annotator export schema."""
-        with open(output_csv_path, "w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=CSV_FIELDNAMES)
-            writer.writeheader()
-            for det in detections:
-                writer.writerow(
-                    self._detection_to_csv_row(det)
-                )
-
+    
     def _detection_to_csv_row(self, det: Detection) -> dict[str, float | str]:
-        """Convert one detection into a CSV row dictionary."""
+        """
+        Convert one detection into a CSV row dictionary.
+
+        Args:
+            det: Detection object produced by the pipeline.
+
+        Returns:
+            A dictionary matching the CSV export schema.
+        """
         return {
             "class": self.config.annotation_class,
             "confidence": float(det.score),
@@ -104,8 +134,30 @@ class NDPIAnnotator:
             "y2_px": float(det.y2_px),
         }
 
+    def _write_csv(self, detections: list[Detection], output_csv_path: str) -> None:
+        """
+        Write detections to a CSV file..
+
+        Args:
+            detections: List of detections to export.
+            output_csv_path: Destination path for the CSV file.
+        """
+        with open(output_csv_path, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=CSV_FIELDNAMES)
+            writer.writeheader()
+            for det in detections:
+                writer.writerow(
+                    self._detection_to_csv_row(det)
+                )
+
     def _write_ndpa(self, detections: list[Detection], output_ndpa_path: str) -> None:
-        """Write detections to an NDPA file using circle annotations."""
+        """
+        Write detections to an NDPA file using circle annotations.
+
+        Args:
+            detections: List of detections to export.
+            output_ndpa_path: Destination path for the NDPA file.
+        """
         writer = NDPAWriter(output_path=output_ndpa_path)
         for det in detections:
             details = f"source={self.model_key}; confidence={float(det.score):.6f}"
@@ -122,7 +174,12 @@ class NDPIAnnotator:
         writer.save()
 
     def run(self) -> list[Detection]:
-        """Execute the full NDPI annotation pipeline and return merged detections."""
+        """
+        Execute the full NDPI annotation pipeline.
+
+        Returns:
+            The final list of deduplicated detections.
+        """
 
         image_name = Path(self.config.ndpi_path).name.strip(".ndpi")
         output_dir = os.path.abspath(self.config.output_dir)
@@ -189,11 +246,14 @@ class NDPIAnnotator:
                     )
                     checkpoint_file.flush()
 
+        tile_stride = max(1, int(round(self.config.tile_size * (1.0 - self.config.overlap))))
+        overlap_span = max(0, (self.config.tile_size + tile_stride - 1) // tile_stride)
+
         final_detections = deduplicate_tile_boundaries(
             tiles_by_key=tiles_by_key,
             detections_by_tile=detections_by_tile,
             iou_threshold=self.config.nms_iou_threshold,
-            overlap_span=self._overlap_span,
+            overlap_span=overlap_span,
         )
 
         # Replace checkpoint CSV with final deduplicated results.
