@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from typing import Mapping, Protocol
 
-
 @dataclass(frozen=True)
 class TileSpec:
     """Grid tile coordinates with both pixel origin and grid index."""
@@ -14,7 +13,6 @@ class TileSpec:
     h: int
     ix: int
     iy: int
-
 
 class DetectionLike(Protocol):
     """Protocol for detection objects that expose the fields needed for IoU/NMS."""

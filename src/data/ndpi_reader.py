@@ -105,6 +105,35 @@ class NDPIData:
         if not hasattr(self, '_z_offsets'):
             self._z_offsets = sorted(set(fp.z_offset_nm for fp in self.focal_planes))
         return self._z_offsets
+
+    def get_image_size_at_magnification(self, magnification: float) -> tuple[int, int]:
+        """
+        Return the slide image size at a requested magnification.
+
+        Args:
+            magnification: Target magnification to validate and convert to an
+                image width and height.
+
+        Returns:
+            A tuple `(width, height)` describing the slide dimensions in pixels
+            at the requested magnification.
+
+        Raises:
+            ValueError: If the requested magnification is not present in the NDPI
+                focal-plane metadata.
+        """
+        matched = any(abs(fp.magnification - magnification) < 1e-6 for fp in self.focal_planes)
+        if not matched:
+            available = sorted({fp.magnification for fp in self.focal_planes})
+            raise ValueError(
+                f"Magnification {magnification}x is unavailable for this NDPI. "
+                f"Available magnifications: {available}"
+            )
+
+        scale = magnification / self.metadata.objective_power
+        width = int(round(self.metadata.full_width * scale))
+        height = int(round(self.metadata.full_height * scale))
+        return width, height
     
     def get_tile_from_page(self, page_index: int, x: int, y: int, w: int, h: int) -> np.ndarray:
         """

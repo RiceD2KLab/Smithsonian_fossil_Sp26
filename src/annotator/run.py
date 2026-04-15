@@ -6,7 +6,13 @@ from src.annotator.config import AnnotatorConfig
 from src.annotator.pipeline import NDPIAnnotator
 
 def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments for the annotator CLI."""
+    """
+    Parse command-line arguments for the annotator CLI.
+    
+    Returns:
+        An `argparse.Namespace` containing parsed arguments.
+    """
+    
     parser = argparse.ArgumentParser(
         description="Run full-slide annotation on an NDPI file and export merged CSV + NDPA detections."
     )
@@ -95,12 +101,7 @@ def main() -> None:
     annotator = NDPIAnnotator(config)
     detections = annotator.run()
 
-    csv_path = annotator.csv_output_path or "<unknown>"
-    ndpa_path = annotator.ndpa_output_path or "<unknown>"
-    print(
-        f"Wrote {len(detections)} detections to CSV: {csv_path} and NDPA: {ndpa_path}"
-    )
-
+    print(f"Wrote {len(detections)} detections.")
 
 if __name__ == "__main__":
     main()
