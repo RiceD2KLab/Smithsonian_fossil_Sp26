@@ -1,4 +1,4 @@
-from __future__ import annotations
+"""Non-maximum suppression helpers for the annotator pipeline."""
 
 from dataclasses import dataclass
 from typing import Mapping, Protocol
@@ -17,6 +17,8 @@ class TileSpec:
 
 
 class DetectionLike(Protocol):
+    """Protocol for detection objects that expose the fields needed for IoU/NMS."""
+
     x1_px: float
     y1_px: float
     x2_px: float
@@ -25,6 +27,7 @@ class DetectionLike(Protocol):
 
 
 def _has_intersection(a: DetectionLike, b: DetectionLike) -> bool:
+    """Return `True` when two detections overlap in pixel space."""
     return not (
         a.x2_px <= b.x1_px
         or a.x1_px >= b.x2_px
@@ -34,6 +37,7 @@ def _has_intersection(a: DetectionLike, b: DetectionLike) -> bool:
 
 
 def _iou_pair(a: DetectionLike, b: DetectionLike) -> float:
+    """Compute IoU for a pair of xyxy detections."""
     inter_x1 = max(a.x1_px, b.x1_px)
     inter_y1 = max(a.y1_px, b.y1_px)
     inter_x2 = min(a.x2_px, b.x2_px)
@@ -52,6 +56,7 @@ def _iou_pair(a: DetectionLike, b: DetectionLike) -> float:
 
 
 def _tile_rects_overlap(a: TileSpec, b: TileSpec) -> bool:
+    """Return `True` when two tile rectangles overlap in image space."""
     return not (
         a.x + a.w <= b.x
         or a.x >= b.x + b.w
@@ -65,6 +70,7 @@ def _iter_forward_overlap_neighbors(
     tiles_by_key: Mapping[tuple[int, int], TileSpec],
     overlap_span: int,
 ) -> list[tuple[int, int]]:
+    """Return lexicographically forward neighboring tiles that can overlap `tile`."""
     neighbors: list[tuple[int, int]] = []
 
     for ny in range(tile.iy, tile.iy + overlap_span + 1):
@@ -106,12 +112,14 @@ def deduplicate_tile_boundaries(
     rank = [0] * len(all_detections)
 
     def find(x: int) -> int:
+        """Return the union-find root for detection index `x`."""
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
     def union(a: int, b: int) -> None:
+        """Merge the union-find components containing `a` and `b`."""
         ra = find(a)
         rb = find(b)
         if ra == rb:

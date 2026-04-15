@@ -13,16 +13,19 @@ Given an NDPI file, the pipeline:
 
 All output rows use class label `paly` by default.
 
-## Files Added
+## Files
 
-- `src/annotator/pipeline.py`
+- `src/annotator/config.py`
   - `AnnotatorConfig`: validated pipeline configuration.
+- `src/annotator/compression.py`
+  - `focus_stack_2d`, `best_focal_plane`, and `resolve_compress_2d`.
+- `src/annotator/pipeline.py`
   - `NDPIAnnotator`: full orchestration class.
-- `src/annotator/models.py`
+- `src/annotator/detectors.py`
   - `YOLOTileDetector` and `RFDETRTileDetector` adapters.
   - `build_detector` factory.
 - `src/annotator/nms.py`
-  - IoU and class-agnostic NMS utilities.
+  - Tile-boundary deduplication utilities.
 - `src/annotator/types.py`
   - `Detection` dataclass for normalized in-memory output.
 - `src/annotator/run.py`
@@ -80,8 +83,8 @@ The grid always includes trailing positions so the final tiles reach the rightmo
 Each tile is read as a 4D stack (`H x W x C x Z`) and compressed to 3D (`H x W x C`) using a resolved `compress_2d(tile_4d)` function selected by `compression_method`.
 
 Supported methods:
-- `focus_stack`: uses `src.preprocessing.focus_stack.focus_stack(tile, k=focus_stack_kernel_size)`
-- `best_focal_plane`: selects the top Tenengrad-ranked focal plane from `src.preprocessing.postprocess_tiles.tenengrad_ranking(tile, tenengrad_ksize=tenengrad_ksize)`
+- `focus_stack`: uses `src.preprocessing.postprocess_tiles.focus_stack(tile, k=focus_stack_kernel_size)`
+- `best_focal_plane`: selects the top Tenengrad-ranked focal plane from `src.annotator.compression.best_focal_plane(tile, tenengrad_ksize=tenengrad_ksize)`
 
 Both methods are normalized to return a `uint8` 3D tile.
 
@@ -196,7 +199,7 @@ Common optional:
 - `--nms_iou_threshold` (default `0.5`)
 - `--compression_method` in `{focus_stack, best_focal_plane}`
 - `--annotation_class` (default `paly`)
-- `--focus_stack_ksize` (default `5`)
+- `--focus_stack_kernel_size` (default `5`)
 - `--tenengrad_ksize` (default `3`)
 
 ## Programmatic Usage

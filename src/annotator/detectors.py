@@ -1,17 +1,11 @@
+"""Model adapters and box sanitation helpers for tile-level detection."""
+
 from dataclasses import dataclass
 from typing import Protocol
 
 import cv2
 import numpy as np
 
-"""
-This file contains model definitions and adapters for tile-level detection 
-in the annotator pipeline. The TileDetector protocol defines a common interface 
-for different model families, and the build_detector function creates adapters 
-based on user input.
-"""
-
-# Relevant model-specific configuration parameters
 @dataclass
 class ModelConfig:
     """Static model configuration used throughout the annotator pipeline."""
@@ -31,9 +25,7 @@ def sanitize_boxes(
     width: int,
     height: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Clip boxes to tile bounds and remove invalid boxes.
-    """
+    """Clip boxes to tile bounds and remove degenerate boxes."""
     boxes_np = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
     scores_np = np.asarray(scores, dtype=np.float32).reshape(-1)
 
@@ -53,15 +45,15 @@ def sanitize_boxes(
     valid = (clipped[:, 2] > clipped[:, 0]) & (clipped[:, 3] > clipped[:, 1])
     return clipped[valid], scores_np[valid]
 
-# A generic TileDetector protocol
 class TileDetector(Protocol):
     """Interface for tile-level detection models."""
 
     def predict(self, tile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return (boxes_xyxy, scores) for a tile."""
+        """Return `(boxes_xyxy, scores)` for a single tile."""
+        ...
 
-class YOLOTileDetector (TileDetector):
-    """Implementation of TileDetector for Ultralytics YOLO26"""
+class YOLOTileDetector(TileDetector):
+    """Tile detector wrapper for Ultralytics YOLO."""
 
     def __init__(
         self,
@@ -69,6 +61,7 @@ class YOLOTileDetector (TileDetector):
         confidence_threshold: float,
         tile_size: int,
     ) -> None:
+        """Load the YOLO checkpoint and store inference parameters."""
         from ultralytics import YOLO
 
         self.model = YOLO(checkpoint_path)
@@ -76,21 +69,16 @@ class YOLOTileDetector (TileDetector):
         self.imgsz = tile_size
 
     def predict(self, tile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        
-        # YOLO expects BGR input when using the model.predict interface, so convert from RGB.
+        """Run YOLO on a tile and return sanitized xyxy boxes plus scores."""
         tile_bgr = cv2.cvtColor(tile, cv2.COLOR_RGB2BGR)
         h, w = tile.shape[:2]
-        
-        # Run inference on single tile
-        kwargs = {
-            "source": tile_bgr,
-            "conf": self.confidence_threshold,
-            "imgsz": self.imgsz,
-            "verbose": False,
-        }
-        results = self.model.predict(**kwargs)
+        results = self.model.predict(
+            source=tile_bgr,
+            conf=self.confidence_threshold,
+            imgsz=self.imgsz,
+            verbose=False,
+        )
 
-        # Convery to numpy arrays and return
         boxes_tensor = results[0].boxes
         if boxes_tensor is None or len(boxes_tensor) == 0:
             return np.zeros((0, 4), dtype=np.float32), np.array([], dtype=np.float32)
@@ -100,8 +88,8 @@ class YOLOTileDetector (TileDetector):
         return sanitize_boxes(boxes, conf, width=w, height=h)
 
 
-class RFDETRTileDetector (TileDetector):
-    """Implementation of TileDetector for RF-DETR"""
+class RFDETRTileDetector(TileDetector):
+    """Tile detector wrapper for RF-DETR."""
 
     def __init__(
         self,
@@ -109,6 +97,7 @@ class RFDETRTileDetector (TileDetector):
         confidence_threshold: float,
         tile_size: int,
     ) -> None:
+        """Load the RF-DETR checkpoint and prepare it for inference."""
         from src.models.rfdetr.train import _MODEL_CLASSES
 
         model_cls = _MODEL_CLASSES.get("base")
@@ -121,9 +110,10 @@ class RFDETRTileDetector (TileDetector):
             resolution=tile_size,
         )
         self.model.optimize_for_inference()
-        self.confidence_threshold = confidence_threshold 
+        self.confidence_threshold = confidence_threshold
 
     def predict(self, tile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Run RF-DETR on a tile and return sanitized xyxy boxes plus scores."""
         tile_bgr = cv2.cvtColor(tile, cv2.COLOR_RGB2BGR)
         h, w = tile.shape[:2]
         detections = self.model.predict(tile_bgr, threshold=self.confidence_threshold)
@@ -139,7 +129,7 @@ class RFDETRTileDetector (TileDetector):
             scores_np = np.ones(len(boxes_np), dtype=np.float32)
         else:
             scores_np = np.asarray(scores, dtype=np.float32)
-        
+
         return sanitize_boxes(boxes_np, scores_np, width=w, height=h)
 
 def build_detector(

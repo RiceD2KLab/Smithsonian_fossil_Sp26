@@ -1,7 +1,12 @@
+"""Command-line entrypoint for the annotator pipeline."""
+
 import argparse
-from src.annotator.pipeline import AnnotatorConfig, NDPIAnnotator
+
+from src.annotator.config import AnnotatorConfig
+from src.annotator.pipeline import NDPIAnnotator
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the annotator CLI."""
     parser = argparse.ArgumentParser(
         description="Run full-slide annotation on an NDPI file and export merged CSV + NDPA detections."
     )
@@ -49,7 +54,7 @@ def parse_args() -> argparse.Namespace:
         help="Method to compress W x H x C x Z tiles to W x H x C.",
     )
     parser.add_argument(
-        "--focus_stack_ksize",
+        "--focus_stack_kernel_size",
         type=int,
         default=5,
         help="Kernel size for LoG-based compression methods.",
@@ -70,6 +75,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run the annotator using parsed command-line arguments."""
     args = parse_args()
     config = AnnotatorConfig(
         ndpi_path=args.ndpi_path,
@@ -81,7 +87,7 @@ def main() -> None:
         confidence_threshold=args.confidence_threshold,
         nms_iou_threshold=args.nms_iou_threshold,
         compression_method=args.compression_method,
-        focus_stack_ksize=args.focus_stack_ksize,
+        focus_stack_kernel_size=args.focus_stack_kernel_size,
         tenengrad_ksize=args.tenengrad_ksize,
         annotation_class=args.annotation_class,
     )
@@ -92,8 +98,7 @@ def main() -> None:
     csv_path = annotator.csv_output_path or "<unknown>"
     ndpa_path = annotator.ndpa_output_path or "<unknown>"
     print(
-        f"Wrote {len(detections)} merged detections to CSV: {csv_path} and NDPA: {ndpa_path} "
-        f"using class '{config.annotation_class}'."
+        f"Wrote {len(detections)} detections to CSV: {csv_path} and NDPA: {ndpa_path}"
     )
 
 

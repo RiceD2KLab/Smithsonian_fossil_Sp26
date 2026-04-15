@@ -1,114 +1,20 @@
+"""End-to-end NDPI annotation pipeline."""
+
 import csv
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 from tqdm import tqdm
 
-from src.annotator.detectors import MODEL_CONFIGS, ModelConfig, TileDetector, build_detector
+from src.annotator.compression import get_compression_func
+from src.annotator.config import AnnotatorConfig
+from src.annotator.detectors import TileDetector, build_detector
 from src.annotator.nms import TileSpec, deduplicate_tile_boundaries
+from src.annotator.types import Detection
 from src.data.ndpa_writer import NDPAWriter
 from src.data.ndpi_reader import NDPIData
-from src.preprocessing.postprocess_tiles import focus_stack, tenengrad_ranking
-
-def best_focal_plane(tile_4d, tenengrad_ksize: int):
-    ranking = tenengrad_ranking(tile_4d, tenengrad_ksize=tenengrad_ksize)
-    return tile_4d[:, :, :, int(ranking[0])]
-
-@dataclass
-class AnnotatorConfig:
-    """Configuration for end-to-end NDPI annotation."""
-
-    ndpi_path: str
-    output_dir: str
-    model_name: str
-    checkpoint_path: str
-    overlap: float
-    magnification: float
-    confidence_threshold: float = 0.5
-    nms_iou_threshold: float = 0.5
-    compression_method: str = "focus_stack"
-    focus_stack_ksize: int = 5
-    tenengrad_ksize: int = 3
-    annotation_class: str = "paly"
-
-    @property
-    def model_key(self) -> str:
-        return self.model_name.lower().strip()
-
-    @property
-    def model_config(self) -> ModelConfig:
-        return MODEL_CONFIGS[self.model_key]
-
-    @property
-    def tile_size(self) -> int:
-        return self.model_config.tile_size
-
-    def validate(self) -> None:
-        if not os.path.isfile(self.ndpi_path):
-            raise FileNotFoundError(f"NDPI file not found: {self.ndpi_path}")
-        if not os.path.isfile(self.checkpoint_path):
-            raise FileNotFoundError(f"Checkpoint file not found: {self.checkpoint_path}")
-        _ = self.model_key
-        if not self.output_dir:
-            raise ValueError("output_dir must be a non-empty path.")
-        if not (0.0 <= self.overlap < 1.0):
-            raise ValueError("overlap must be in [0.0, 1.0).")
-        if self.magnification <= 0:
-            raise ValueError("magnification must be > 0.")
-        if not (0.0 <= self.confidence_threshold <= 1.0):
-            raise ValueError("confidence_threshold must be in [0.0, 1.0].")
-        if not (0.0 <= self.nms_iou_threshold <= 1.0):
-            raise ValueError("nms_iou_threshold must be in [0.0, 1.0].")
-        if self.compression_method not in {"focus_stack", "best_focal_plane"}:
-            raise ValueError("compression_method must be one of: focus_stack, best_focal_plane.")
-        if self.tenengrad_ksize not in {1, 3, 5, 7}:
-            raise ValueError("tenengrad_ksize must be one of: 1, 3, 5, 7.")
-
-@dataclass
-class Detection:
-    """Single detection in both pixel and physical-coordinate spaces."""
-
-    x1_px: float
-    y1_px: float
-    x2_px: float
-    y2_px: float
-    score: float
-    x_nm: float
-    y_nm: float
-    width_nm: float
-    height_nm: float
-
-def resolve_compress_2d(
-    method: str,
-    focus_stack_ksize: int,
-    tenengrad_ksize: int,
-) -> Callable[[np.ndarray], np.ndarray]:
-    """Resolve a tile-compression method string to a callable compress_2d(tile_4d)."""
-    method_key = method.strip().lower()
-    if method_key == "focus_stack":
-        def compress_2d(tile_4d: np.ndarray) -> np.ndarray:
-            stacked = focus_stack(tile_4d, k=focus_stack_ksize)
-            image = stacked[0] if isinstance(stacked, tuple) else stacked
-            if image.dtype != np.uint8:
-                image = np.clip(image, 0, 255).astype(np.uint8)
-            return image
-
-        return compress_2d
-
-    if method_key == "best_focal_plane":
-        def compress_2d(tile_4d: np.ndarray) -> np.ndarray:
-            plane = best_focal_plane(tile_4d, tenengrad_ksize=tenengrad_ksize)
-            image = plane[0] if isinstance(plane, tuple) else plane
-            if image.dtype != np.uint8:
-                image = np.clip(image, 0, 255).astype(np.uint8)
-            return image
-
-        return compress_2d
-
-    raise ValueError("Unsupported compression method. Choose 'focus_stack' or 'best_focal_plane'.")
 
 class NDPIAnnotator:
     """Pipeline that annotates a full NDPI slide and writes merged CSV and NDPA output."""
@@ -116,16 +22,16 @@ class NDPIAnnotator:
     def __init__(
         self,
         config: AnnotatorConfig,
-        compress_2d_fn: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> None:
+        """Initialize the pipeline with configuration, metadata, and detector state."""
         config.validate()
         self.config = config
         self.model_key = config.model_key
         self.model_config = config.model_config
         self.ndpi = NDPIData(config.ndpi_path)
-        self.compress_2d = compress_2d_fn or resolve_compress_2d(
+        self.compress_2d = get_compression_func(
             method=config.compression_method,
-            focus_stack_ksize=config.focus_stack_ksize,
+            focus_stack_kernel_size=config.focus_stack_kernel_size,
             tenengrad_ksize=config.tenengrad_ksize,
         )
         self.detector: TileDetector = build_detector(
@@ -154,7 +60,18 @@ class NDPIAnnotator:
         self.csv_output_path: str | None = None
         self.ndpa_output_path: str | None = None
 
+    def _resolve_output_paths(self) -> tuple[str, str]:
+        """Return the CSV and NDPA paths derived from the NDPI filename."""
+        ndpi_name = Path(self.config.ndpi_path).name
+        ndpi_stem = ndpi_name[: -len(".ndpi")] if ndpi_name.lower().endswith(".ndpi") else Path(ndpi_name).stem
+
+        output_dir = os.path.abspath(self.config.output_dir)
+        csv_path = os.path.join(output_dir, f"{ndpi_stem}.csv")
+        ndpa_path = os.path.join(output_dir, f"{ndpi_name}.ndpa")
+        return csv_path, ndpa_path
+
     def _image_size_at_magnification(self) -> tuple[int, int]:
+        """Return the target image size at the requested magnification."""
         matched = any(
             abs(fp.magnification - self.config.magnification) < 1e-6
             for fp in self.ndpi.focal_planes
@@ -173,6 +90,7 @@ class NDPIAnnotator:
 
     @staticmethod
     def _axis_positions(length: int, tile_size: int, stride: int) -> list[int]:
+        """Return tile origins that cover one image axis."""
         if length <= tile_size:
             return [0]
 
@@ -183,6 +101,7 @@ class NDPIAnnotator:
         return positions
 
     def _build_tile_grid(self) -> list[TileSpec]:
+        """Build the tile grid that covers the slide at the target magnification."""
         image_w, image_h = self._image_size_at_magnification()
         tile_size = self.config.tile_size
         stride = self._tile_stride
@@ -196,6 +115,7 @@ class NDPIAnnotator:
         return tiles
 
     def _to_nm_bbox(self, x1_px: float, y1_px: float, x2_px: float, y2_px: float) -> tuple[float, float, float, float]:
+        """Convert global pixel bbox coordinates to NDPI nanometer space."""
         x_nm = x1_px * self._nm_per_px + self._origin_x_nm
         y_nm = y1_px * self._nm_per_px + self._origin_y_nm
         width_nm = max(x2_px - x1_px, 0.0) * self._nm_per_px
@@ -203,6 +123,7 @@ class NDPIAnnotator:
         return x_nm, y_nm, width_nm, height_nm
 
     def _write_csv(self, detections: list[Detection], output_csv_path: str) -> None:
+        """Write detections to a CSV file using the annotator export schema."""
         os.makedirs(os.path.dirname(os.path.abspath(output_csv_path)), exist_ok=True)
         fieldnames = self._csv_fieldnames()
 
@@ -227,6 +148,7 @@ class NDPIAnnotator:
 
     @staticmethod
     def _csv_fieldnames() -> list[str]:
+        """Return the CSV field order used by the annotator."""
         return [
             "class",
             "confidence",
@@ -240,7 +162,23 @@ class NDPIAnnotator:
             "y2_px",
         ]
 
+    def _detection_to_csv_row(self, det: Detection) -> dict[str, float | str]:
+        """Convert one detection into a CSV row dictionary."""
+        return {
+            "class": self.config.annotation_class,
+            "confidence": float(det.score),
+            "x_nm": float(det.x_nm),
+            "y_nm": float(det.y_nm),
+            "width_nm": float(det.width_nm),
+            "height_nm": float(det.height_nm),
+            "x1_px": float(det.x1_px),
+            "y1_px": float(det.y1_px),
+            "x2_px": float(det.x2_px),
+            "y2_px": float(det.y2_px),
+        }
+
     def _write_ndpa(self, detections: list[Detection], output_ndpa_path: str) -> None:
+        """Write detections to an NDPA file using circle annotations."""
         writer = NDPAWriter(output_path=output_ndpa_path)
         for det in detections:
             details = f"source={self.model_key}; confidence={float(det.score):.6f}"
@@ -258,59 +196,40 @@ class NDPIAnnotator:
 
     def run(self) -> list[Detection]:
         """Execute the full NDPI annotation pipeline and return merged detections."""
-        
-        # Get name of image (minus extension)
-        image_name = Path(self.config.ndpi_path).name.strip(".ndpi")
-        
-        # Get NDPA and CSV output paths ready
-        output_dir = os.path.abspath(self.config.output_dir)
-        os.makedirs(output_dir, exist_ok=True)
-        csv_path = os.path.join(output_dir, f"{image_name}.csv")
-        ndpa_path = os.path.join(output_dir, f"{image_name}.ndpa")
-        
-        # Build the tile grid
+
+        csv_path, ndpa_path = self._resolve_output_paths()
+        os.makedirs(os.path.dirname(os.path.abspath(csv_path)), exist_ok=True)
+
         tiles = self._build_tile_grid()
-        
-        # Key data structures for merging:
         tiles_by_key: dict[tuple[int, int], TileSpec] = {}
         detections_by_tile: dict[tuple[int, int], list[Detection]] = {}
 
         # Write checkpoint rows as tiles are processed; final CSV is rewritten after deduplication.
         with open(csv_path, "w", newline="") as checkpoint_file:
-            
             checkpoint_writer = csv.DictWriter(checkpoint_file, fieldnames=self._csv_fieldnames())
             checkpoint_writer.writeheader()
 
             for tile in tqdm(tiles, desc="Annotating tiles", unit="tile"):
-                
-                # Store tile spec for merging later.
                 key = (tile.iy, tile.ix)
                 tiles_by_key[key] = tile
 
-                # Read tile, compress to 2D, and run detector.
                 x, y, w, h = tile.x, tile.y, tile.w, tile.h
                 tile_3d = self.ndpi.get_tile(x=x, y=y, w=w, h=h, magnification=self.config.magnification)
                 tile_2d = self.compress_2d(tile_3d)
                 boxes, scores = self.detector.predict(tile_2d)
-                
-                # If no detections, record empty list and continue.
+
                 if len(boxes) == 0:
                     detections_by_tile[key] = []
                     continue
 
                 tile_candidates: list[Detection] = []
                 for box, score in zip(boxes, scores):
-
-                    # Convert box coordinates from tile-local to global pixel space.
                     gx1 = float(x + box[0])
                     gy1 = float(y + box[1])
                     gx2 = float(x + box[2])
                     gy2 = float(y + box[3])
 
-                    # Convert global pixel coordinates to physical space.
                     x_nm, y_nm, width_nm, height_nm = self._to_nm_bbox(gx1, gy1, gx2, gy2)
-                    
-                    # Create Detection object and add to tile candidates.
                     tile_candidates.append(
                         Detection(
                             x1_px=gx1,
@@ -324,11 +243,9 @@ class NDPIAnnotator:
                             height_nm=height_nm,
                         )
                     )
-                
-                # Store candidates for this tile for later merging.
+
                 detections_by_tile[key] = tile_candidates
 
-                # Optionally write tile candidates to checkpoint CSV immediately for checkpointing; will be rewritten after deduplication.
                 if tile_candidates:
                     checkpoint_writer.writerows(
                         [self._detection_to_csv_row(det) for det in tile_candidates]
