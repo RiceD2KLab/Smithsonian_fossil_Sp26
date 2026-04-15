@@ -1,31 +1,24 @@
-"""Non-maximum suppression helpers for the annotator pipeline."""
+"""
+Non-maximum suppression helpers for the annotator pipeline.
 
-from dataclasses import dataclass
-from typing import Mapping, Protocol
+This module implements the boundary-aware deduplication pass used after tile
+inference. It merges detections that overlap across neighboring tiles while
+keeping the highest-confidence detection in each connected duplicate cluster.
+"""
 
-@dataclass(frozen=True)
-class TileSpec:
-    """Grid tile coordinates with both pixel origin and grid index."""
+from src.annotator.types import Detection, TileSpec
 
-    x: int
-    y: int
-    w: int
-    h: int
-    ix: int
-    iy: int
+def _has_intersection(a: Detection, b: Detection) -> bool:
+    """
+    Return whether two detections overlap in pixel space.
 
-class DetectionLike(Protocol):
-    """Protocol for detection objects that expose the fields needed for IoU/NMS."""
+    Args:
+        a: First detection in pixel `xyxy` coordinates.
+        b: Second detection in pixel `xyxy` coordinates.
 
-    x1_px: float
-    y1_px: float
-    x2_px: float
-    y2_px: float
-    score: float
-
-
-def _has_intersection(a: DetectionLike, b: DetectionLike) -> bool:
-    """Return `True` when two detections overlap in pixel space."""
+    Returns:
+        `True` when the boxes intersect with positive area, otherwise `False`.
+    """
     return not (
         a.x2_px <= b.x1_px
         or a.x1_px >= b.x2_px
@@ -33,9 +26,17 @@ def _has_intersection(a: DetectionLike, b: DetectionLike) -> bool:
         or a.y1_px >= b.y2_px
     )
 
+def _iou_pair(a: Detection, b: Detection) -> float:
+    """
+    Compute the intersection-over-union for two detections.
 
-def _iou_pair(a: DetectionLike, b: DetectionLike) -> float:
-    """Compute IoU for a pair of xyxy detections."""
+    Args:
+        a: First detection in pixel `xyxy` coordinates.
+        b: Second detection in pixel `xyxy` coordinates.
+
+    Returns:
+        The IoU score in the range `[0.0, 1.0]`.
+    """
     inter_x1 = max(a.x1_px, b.x1_px)
     inter_y1 = max(a.y1_px, b.y1_px)
     inter_x2 = min(a.x2_px, b.x2_px)
@@ -53,8 +54,18 @@ def _iou_pair(a: DetectionLike, b: DetectionLike) -> float:
     return inter / denom
 
 
-def _tile_rects_overlap(a: TileSpec, b: TileSpec) -> bool:
-    """Return `True` when two tile rectangles overlap in image space."""
+def _has_overlap(a: TileSpec, b: TileSpec) -> bool:
+    """
+    Return whether two tile rectangles overlap in image space.
+
+    Args:
+        a: First tile specification.
+        b: Second tile specification.
+
+    Returns:
+        `True` when the tile rectangles intersect with positive area, otherwise
+        `False`.
+    """
     return not (
         a.x + a.w <= b.x
         or a.x >= b.x + b.w
@@ -63,45 +74,63 @@ def _tile_rects_overlap(a: TileSpec, b: TileSpec) -> bool:
     )
 
 
-def _iter_forward_overlap_neighbors(
-    tile: TileSpec,
-    tiles_by_key: Mapping[tuple[int, int], TileSpec],
-    overlap_span: int,
-) -> list[tuple[int, int]]:
-    """Return lexicographically forward neighboring tiles that can overlap `tile`."""
-    neighbors: list[tuple[int, int]] = []
+def _get_overlapping_tiles(
+    tile_index: int,
+    tiles: list[TileSpec],
+) -> list[int]:
+    """
+    Return later tile indices whose rectangles overlap the given tile.
 
-    for ny in range(tile.iy, tile.iy + overlap_span + 1):
-        x_start = tile.ix + 1 if ny == tile.iy else tile.ix - overlap_span
-        x_end = tile.ix + overlap_span
-        for nx in range(x_start, x_end + 1):
-            key = (ny, nx)
-            other = tiles_by_key.get(key)
-            if other is None:
-                continue
-            if _tile_rects_overlap(tile, other):
-                neighbors.append(key)
+    Tiles are processed in row-major order. The scan stops once later tiles
+    start below the current tile's bottom edge, which means they cannot
+    overlap in image space.
+
+    Args:
+        tile_index: Index of the current tile in the row-major tile list.
+        tiles: Row-major list of tile specifications.
+
+    Returns:
+        The indices of later tiles that overlap the tile at `tile_index`.
+    """
+    tile = tiles[tile_index]
+    neighbors: list[int] = []
+
+    for other_index in range(tile_index + 1, len(tiles)):
+        other = tiles[other_index]
+        if other.y >= tile.y + tile.h:
+            break
+        if _has_overlap(tile, other):
+            neighbors.append(other_index)
 
     return neighbors
 
 
-def deduplicate_tile_boundaries(
-    tiles_by_key: Mapping[tuple[int, int], TileSpec],
-    detections_by_tile: Mapping[tuple[int, int], list[DetectionLike]],
+def deduplicate(
+    tiles: list[TileSpec],
+    detections_by_tile: list[list[Detection]],
     iou_threshold: float,
-    overlap_span: int,
-) -> list[DetectionLike]:
-    """Deduplicate only across overlapping tile pairs in one end-of-run pass."""
-    all_detections: list[DetectionLike] = []
-    ids_by_tile: dict[tuple[int, int], list[int]] = {}
+) -> list[Detection]:
+    """
+    Deduplicate detections across overlapping tile boundaries.
 
-    for key in sorted(tiles_by_key):
-        dets = detections_by_tile.get(key, [])
+    Args:
+        tiles: Row-major list of tile specifications.
+        detections_by_tile: Parallel list of detections produced for each tile.
+        iou_threshold: IoU threshold above which detections are considered
+            duplicates.
+
+    Returns:
+        The deduplicated detections.
+    """
+    all_detections: list[Detection] = []
+    ids_by_tile: list[list[int]] = []
+
+    for dets in detections_by_tile:
         ids: list[int] = []
         for det in dets:
             ids.append(len(all_detections))
             all_detections.append(det)
-        ids_by_tile[key] = ids
+        ids_by_tile.append(ids)
 
     if not all_detections:
         return []
@@ -130,14 +159,13 @@ def deduplicate_tile_boundaries(
             parent[rb] = ra
             rank[ra] += 1
 
-    for key in sorted(tiles_by_key):
-        tile = tiles_by_key[key]
-        ids_a = ids_by_tile.get(key, [])
+    for tile_index, tile in enumerate(tiles):
+        ids_a = ids_by_tile[tile_index] if tile_index < len(ids_by_tile) else []
         if not ids_a:
             continue
 
-        for nkey in _iter_forward_overlap_neighbors(tile, tiles_by_key, overlap_span):
-            ids_b = ids_by_tile.get(nkey, [])
+        for other_index in _get_overlapping_tiles(tile_index, tiles):
+            ids_b = ids_by_tile[other_index] if other_index < len(ids_by_tile) else []
             if not ids_b:
                 continue
 
@@ -161,5 +189,4 @@ def deduplicate_tile_boundaries(
             best_by_component[root] = det_id
 
     final_detections = [all_detections[idx] for idx in best_by_component.values()]
-    final_detections.sort(key=lambda d: d.score, reverse=True)
     return final_detections

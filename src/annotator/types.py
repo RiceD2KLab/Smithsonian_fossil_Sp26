@@ -15,3 +15,15 @@ class Detection:
     y_nm: float
     width_nm: float
     height_nm: float
+
+
+@dataclass(frozen=True)
+class TileSpec:
+    """Grid tile coordinates with both pixel origin and grid index."""
+
+    x: int
+    y: int
+    w: int
+    h: int
+    ix: int
+    iy: int

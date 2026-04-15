@@ -13,8 +13,8 @@ from tqdm import tqdm
 from src.annotator.compression import get_compression_func
 from src.annotator.config import AnnotatorConfig
 from src.annotator.detectors import TileDetector, build_detector
-from src.annotator.nms import TileSpec, deduplicate_tile_boundaries
-from src.annotator.types import Detection
+from src.annotator.nms import deduplicate
+from src.annotator.types import Detection, TileSpec
 from src.data.ndpa_writer import NDPAWriter
 from src.data.ndpi_reader import NDPIData
 from src.data.util import pixels_to_nm_bbox
@@ -181,6 +181,7 @@ class NDPIAnnotator:
             The final list of deduplicated detections.
         """
 
+        # Get NDPI image name and prepare output paths.
         image_name = Path(self.config.ndpi_path).name.strip(".ndpi")
         output_dir = os.path.abspath(self.config.output_dir)
         os.makedirs(output_dir, exist_ok=True)
@@ -188,25 +189,20 @@ class NDPIAnnotator:
         ndpa_path = os.path.join(output_dir, f"{image_name}.ndpi.ndpa")
 
         tiles = self._build_tile_grid()
-        tiles_by_key: dict[tuple[int, int], TileSpec] = {}
-        detections_by_tile: dict[tuple[int, int], list[Detection]] = {}
+        detections_by_tile: list[list[Detection]] = [[] for _ in tiles]
 
         # Write checkpoint rows as tiles are processed; final CSV is rewritten after deduplication.
         with open(csv_path, "w", newline="") as checkpoint_file:
             checkpoint_writer = csv.DictWriter(checkpoint_file, fieldnames=CSV_FIELDNAMES)
             checkpoint_writer.writeheader()
 
-            for tile in tqdm(tiles, desc="Annotating tiles", unit="tile"):
-                key = (tile.iy, tile.ix)
-                tiles_by_key[key] = tile
-
+            for tile_index, tile in enumerate(tqdm(tiles, desc="Annotating tiles", unit="tile")):
                 x, y, w, h = tile.x, tile.y, tile.w, tile.h
                 tile_3d = self.ndpi.get_tile(x=x, y=y, w=w, h=h, magnification=self.config.magnification)
                 tile_2d = self.compress(tile_3d)
                 boxes, scores = self.detector.predict(tile_2d)
 
                 if len(boxes) == 0:
-                    detections_by_tile[key] = []
                     continue
 
                 tile_candidates: list[Detection] = []
@@ -238,7 +234,7 @@ class NDPIAnnotator:
                         )
                     )
 
-                detections_by_tile[key] = tile_candidates
+                detections_by_tile[tile_index] = tile_candidates
 
                 if tile_candidates:
                     checkpoint_writer.writerows(
@@ -246,14 +242,10 @@ class NDPIAnnotator:
                     )
                     checkpoint_file.flush()
 
-        tile_stride = max(1, int(round(self.config.tile_size * (1.0 - self.config.overlap))))
-        overlap_span = max(0, (self.config.tile_size + tile_stride - 1) // tile_stride)
-
-        final_detections = deduplicate_tile_boundaries(
-            tiles_by_key=tiles_by_key,
+        final_detections = deduplicate(
+            tiles=tiles,
             detections_by_tile=detections_by_tile,
             iou_threshold=self.config.nms_iou_threshold,
-            overlap_span=overlap_span,
         )
 
         # Replace checkpoint CSV with final deduplicated results.
