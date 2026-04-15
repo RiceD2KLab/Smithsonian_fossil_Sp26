@@ -49,10 +49,17 @@ def parse_args() -> argparse.Namespace:
         help="Method to compress W x H x C x Z tiles to W x H x C.",
     )
     parser.add_argument(
-        "--focus_stack_kernel_size",
+        "--focus_stack_ksize",
         type=int,
         default=5,
         help="Kernel size for LoG-based compression methods.",
+    )
+    parser.add_argument(
+        "--tenengrad_ksize",
+        type=int,
+        choices=[1, 3, 5, 7],
+        default=3,
+        help="Sobel kernel size for Tenengrad-based best-focal-plane selection.",
     )
     parser.add_argument(
         "--annotation_class",
@@ -74,7 +81,8 @@ def main() -> None:
         confidence_threshold=args.confidence_threshold,
         nms_iou_threshold=args.nms_iou_threshold,
         compression_method=args.compression_method,
-        focus_stack_kernel_size=args.focus_stack_kernel_size,
+        focus_stack_ksize=args.focus_stack_ksize,
+        tenengrad_ksize=args.tenengrad_ksize,
         annotation_class=args.annotation_class,
     )
 

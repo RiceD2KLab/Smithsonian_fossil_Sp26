@@ -81,7 +81,7 @@ Each tile is read as a 4D stack (`H x W x C x Z`) and compressed to 3D (`H x W x
 
 Supported methods:
 - `focus_stack`: uses `src.preprocessing.focus_stack.focus_stack(tile, k=focus_stack_kernel_size)`
-- `best_focal_plane`: uses `src.preprocessing.focus_stack.best_focal_plane(tile, k=focus_stack_kernel_size)`
+- `best_focal_plane`: selects the top Tenengrad-ranked focal plane from `src.preprocessing.postprocess_tiles.tenengrad_ranking(tile, tenengrad_ksize=tenengrad_ksize)`
 
 Both methods are normalized to return a `uint8` 3D tile.
 
@@ -196,7 +196,8 @@ Common optional:
 - `--nms_iou_threshold` (default `0.5`)
 - `--compression_method` in `{focus_stack, best_focal_plane}`
 - `--annotation_class` (default `paly`)
-- `--focus_stack_kernel_size` (default `5`)
+- `--focus_stack_ksize` (default `5`)
+- `--tenengrad_ksize` (default `3`)
 
 ## Programmatic Usage
 

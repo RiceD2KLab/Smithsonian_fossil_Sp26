@@ -11,11 +11,11 @@ from src.annotator.detectors import MODEL_CONFIGS, ModelConfig, TileDetector, bu
 from src.annotator.nms import TileSpec, deduplicate_tile_boundaries
 from src.data.ndpa_writer import NDPAWriter
 from src.data.ndpi_reader import NDPIData
-from src.preprocessing.postprocess_tiles import focus_stack
+from src.preprocessing.postprocess_tiles import focus_stack, tenengrad_ranking
 
-## TO REMOVE:
-def best_focal_plane(tile_4d, k):
-    return tile_4d[:, :, :, k // 2]  # Placeholder: just take the middle plane for now.
+def best_focal_plane(tile_4d, tenengrad_ksize: int):
+    ranking = tenengrad_ranking(tile_4d, tenengrad_ksize=tenengrad_ksize)
+    return tile_4d[:, :, :, int(ranking[0])]
 
 @dataclass
 class AnnotatorConfig:
@@ -30,7 +30,8 @@ class AnnotatorConfig:
     confidence_threshold: float = 0.5
     nms_iou_threshold: float = 0.5
     compression_method: str = "focus_stack"
-    focus_stack_kernel_size: int = 5
+    focus_stack_ksize: int = 5
+    tenengrad_ksize: int = 3
     annotation_class: str = "paly"
 
     @property
@@ -63,6 +64,8 @@ class AnnotatorConfig:
             raise ValueError("nms_iou_threshold must be in [0.0, 1.0].")
         if self.compression_method not in {"focus_stack", "best_focal_plane"}:
             raise ValueError("compression_method must be one of: focus_stack, best_focal_plane.")
+        if self.tenengrad_ksize not in {1, 3, 5, 7}:
+            raise ValueError("tenengrad_ksize must be one of: 1, 3, 5, 7.")
 
 @dataclass
 class Detection:
@@ -80,13 +83,14 @@ class Detection:
 
 def resolve_compress_2d(
     method: str,
-    kernel_size: int,
+    focus_stack_ksize: int,
+    tenengrad_ksize: int,
 ) -> Callable[[np.ndarray], np.ndarray]:
     """Resolve a tile-compression method string to a callable compress_2d(tile_4d)."""
     method_key = method.strip().lower()
     if method_key == "focus_stack":
         def compress_2d(tile_4d: np.ndarray) -> np.ndarray:
-            stacked = focus_stack(tile_4d, k=kernel_size)
+            stacked = focus_stack(tile_4d, k=focus_stack_ksize)
             image = stacked[0] if isinstance(stacked, tuple) else stacked
             if image.dtype != np.uint8:
                 image = np.clip(image, 0, 255).astype(np.uint8)
@@ -96,7 +100,7 @@ def resolve_compress_2d(
 
     if method_key == "best_focal_plane":
         def compress_2d(tile_4d: np.ndarray) -> np.ndarray:
-            plane = best_focal_plane(tile_4d, k=kernel_size)
+            plane = best_focal_plane(tile_4d, tenengrad_ksize=tenengrad_ksize)
             image = plane[0] if isinstance(plane, tuple) else plane
             if image.dtype != np.uint8:
                 image = np.clip(image, 0, 255).astype(np.uint8)
@@ -121,7 +125,8 @@ class NDPIAnnotator:
         self.ndpi = NDPIData(config.ndpi_path)
         self.compress_2d = compress_2d_fn or resolve_compress_2d(
             method=config.compression_method,
-            kernel_size=config.focus_stack_kernel_size,
+            focus_stack_ksize=config.focus_stack_ksize,
+            tenengrad_ksize=config.tenengrad_ksize,
         )
         self.detector: TileDetector = build_detector(
             model_name=self.model_key,

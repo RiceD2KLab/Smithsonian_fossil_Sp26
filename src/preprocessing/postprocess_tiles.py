@@ -38,6 +38,29 @@ def _to_gray_stack(tile_zfirst: np.ndarray) -> np.ndarray:
 
     return gray_stack
 
+
+def vol_ranking(tile: np.ndarray) -> np.ndarray:
+    """Return focal-plane indices ranked best-to-worst by Variance of Laplacian."""
+    tile_zfirst = np.moveaxis(tile, -1, 0)  # (z, h, w, c)
+    z, _, _, _ = tile_zfirst.shape
+    gray_stack = _to_gray_stack(tile_zfirst)
+
+    vol_scores = np.array([variance_of_laplacian(gray_stack[zi]) for zi in range(z)], dtype=np.float64)
+    return np.argsort(vol_scores)[::-1]
+
+
+def tenengrad_ranking(tile: np.ndarray, tenengrad_ksize: int = TENENGRAD_KSIZE) -> np.ndarray:
+    """Return focal-plane indices ranked best-to-worst by Tenengrad."""
+    tile_zfirst = np.moveaxis(tile, -1, 0)  # (z, h, w, c)
+    z, _, _, _ = tile_zfirst.shape
+    gray_stack = _to_gray_stack(tile_zfirst)
+
+    tenengrad_scores = np.array(
+        [tenengrad(gray_stack[zi], ksize=tenengrad_ksize) for zi in range(z)],
+        dtype=np.float64,
+    )
+    return np.argsort(tenengrad_scores)[::-1]
+
 def focus_stack(tile: np.ndarray, k: int = LOG_KERNEL_SIZE) -> tuple[np.ndarray, np.ndarray]:
     """Focus stack a tile of shape (h, w, c, z) to (h, w, c).
 
@@ -67,25 +90,6 @@ def focus_stack(tile: np.ndarray, k: int = LOG_KERNEL_SIZE) -> tuple[np.ndarray,
 def maximum_intensity_projection(tile: np.ndarray) -> np.ndarray:
     """Collapse a tile of shape (h, w, c, z) to (h, w, c) via max projection."""
     return np.max(tile, axis=tile.ndim - 1)
-
-def _compute_metric_rankings(
-    tile: np.ndarray,
-    tenengrad_ksize: int = TENENGRAD_KSIZE,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute per-plane rankings using VoL and Tenengrad metrics."""
-    tile_zfirst = np.moveaxis(tile, -1, 0)  # (z, h, w, c)
-    z, _, _, _ = tile_zfirst.shape
-    gray_stack = _to_gray_stack(tile_zfirst)
-
-    vol_scores = np.array([variance_of_laplacian(gray_stack[zi]) for zi in range(z)], dtype=np.float64)
-    tenengrad_scores = np.array(
-        [tenengrad(gray_stack[zi], ksize=tenengrad_ksize) for zi in range(z)],
-        dtype=np.float64,
-    )
-
-    ranking_vol = np.argsort(vol_scores)[::-1]
-    ranking_tenengrad = np.argsort(tenengrad_scores)[::-1]
-    return ranking_vol, ranking_tenengrad
 
 def _replace_dataset(group: h5py.Group, name: str, data: np.ndarray) -> None:
     """Replace an H5 dataset in-place if it already exists."""
@@ -125,10 +129,8 @@ def process_h5_file(
 
             if write_rankings and avg_logs is not None:
                 ranking_log = np.argsort(avg_logs)[::-1]
-                ranking_vol, ranking_tenengrad = _compute_metric_rankings(
-                    data,
-                    tenengrad_ksize=tenengrad_ksize,
-                )
+                ranking_vol = vol_ranking(data)
+                ranking_tenengrad = tenengrad_ranking(data, tenengrad_ksize=tenengrad_ksize)
 
                 # Keep legacy field for compatibility and write explicit metric fields.
                 _replace_dataset(group, "focal_plane_ranking", ranking_log) # Legacy field for compatibility
