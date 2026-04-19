@@ -2,13 +2,15 @@
 End-to-end NDPI annotation pipeline.
 
 This module orchestrates tile extraction, tile compression, model inference,
-cross-tile deduplication, and export to CSV and NDPA outputs.
+cross-tile deduplication, and export to CSV, NDPA, and optional PNG crops.
 """
 
 import csv
+import math
 import os
 from pathlib import Path
 from tqdm import tqdm
+from PIL import Image
 
 from src.annotator.compression import get_compression_func
 from src.annotator.config import AnnotatorConfig
@@ -173,6 +175,40 @@ class NDPIAnnotator:
             )
         writer.save()
 
+    def _write_crops(
+        self,
+        detections: list[Detection],
+        output_dir: str
+    ) -> None:
+        """
+        Write one PNG crop per detection.
+
+        Args:
+            detections: Final deduplicated detections to export.
+            output_dir: Output directory for crops.
+        """
+        crop_dir = Path(output_dir)
+        crop_dir.mkdir(parents=True, exist_ok=True)
+
+        for index, det in enumerate(detections, start=1):
+            x0 = int(math.floor(det.x1_px))
+            y0 = int(math.floor(det.y1_px))
+            x1 = int(math.ceil(det.x2_px))
+            y1 = int(math.ceil(det.y2_px))
+            crop_w = max(1, x1 - x0)
+            crop_h = max(1, y1 - y0)
+
+            tile_3d = self.ndpi.get_tile(
+                x=x0,
+                y=y0,
+                w=crop_w,
+                h=crop_h,
+                magnification=self.config.magnification,
+            )
+            crop_2d = self.compress(tile_3d)
+            crop_path = crop_dir / f"{index:05d}.png"
+            Image.fromarray(crop_2d).save(crop_path)
+
     def run(self) -> list[Detection]:
         """
         Execute the full NDPI annotation pipeline.
@@ -182,7 +218,7 @@ class NDPIAnnotator:
         """
 
         # Get NDPI image name and prepare output paths.
-        image_name = Path(self.config.ndpi_path).name.strip(".ndpi")
+        image_name = Path(self.config.ndpi_path).stem
         output_dir = os.path.abspath(self.config.output_dir)
         os.makedirs(output_dir, exist_ok=True)
         csv_path = os.path.join(output_dir, f"{image_name}.csv")
@@ -250,4 +286,6 @@ class NDPIAnnotator:
         # Replace checkpoint CSV with final deduplicated results.
         self._write_csv(final_detections, csv_path)
         self._write_ndpa(final_detections, ndpa_path)
+        if self.config.export_crops:
+            self._write_crops(final_detections, os.path.join(output_dir, "crops"))
         return final_detections

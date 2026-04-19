@@ -37,6 +37,7 @@ class AnnotatorConfig:
     focus_stack_kernel_size: int = 5
     tenengrad_ksize: int = 3
     annotation_class: str = "paly"
+    export_crops: bool = False
 
     @property
     def model_config(self) -> ModelConfig:

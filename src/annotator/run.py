@@ -77,6 +77,11 @@ def parse_args() -> argparse.Namespace:
         default="paly",
         help="Class label written to every CSV row.",
     )
+    parser.add_argument(
+        "--export_crops",
+        action="store_true",
+        help="Export a crop for each final detection into a subfolder under output_dir.",
+    )
     return parser.parse_args()
 
 
@@ -96,6 +101,7 @@ def main() -> None:
         focus_stack_kernel_size=args.focus_stack_kernel_size,
         tenengrad_ksize=args.tenengrad_ksize,
         annotation_class=args.annotation_class,
+        export_crops=args.export_crops,
     )
 
     annotator = NDPIAnnotator(config)
