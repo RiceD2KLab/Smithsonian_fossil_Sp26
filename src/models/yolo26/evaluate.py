@@ -26,7 +26,6 @@ Outputs:
 from __future__ import annotations
 
 import argparse
-import os
 from typing import Any
 
 from ultralytics import YOLO
@@ -38,6 +37,9 @@ def parse_validation_arguments() -> argparse.Namespace:
     """
     Parse command-line arguments for YOLO validation.
 
+    Args:
+        None
+
     Returns:
         Namespace with parsed arguments.
     """
@@ -46,7 +48,7 @@ def parse_validation_arguments() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example:
-    python -m src.modeling.yolo26.val \\
+    python -m src.models.yolo26.evaluate \\
         --model runs/detect/yolo26/weights/best.pt \\
         --coco_dir data/coco_export \\
         --split test \\
@@ -190,6 +192,18 @@ def build_validation_overrides(
 def main() -> None:
     """
     Main entry point for YOLO26 evaluation.
+
+    Workflow:
+        1. Parses command-line arguments.
+        2. Validates the COCO export directory structure.
+        3. Converts COCO annotations to YOLO txt format (idempotent).
+        4. Loads the YOLO model and runs model.val() with the built overrides.
+
+    Args:
+        None
+
+    Returns:
+        None
     """
     args = parse_validation_arguments()
 
