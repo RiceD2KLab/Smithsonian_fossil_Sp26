@@ -160,7 +160,7 @@ class NDPIAnnotator:
         """
         writer = NDPAWriter(output_path=output_ndpa_path)
         for det in detections:
-            details = f"source={self.model_key}; confidence={float(det.score):.6f}"
+            details = f"source={self.config.model_name}; confidence={float(det.score):.6f}"
             writer.add_circle(
                 label=self.config.annotation_class,
                 lens=self.config.magnification,
@@ -168,7 +168,7 @@ class NDPIAnnotator:
                 y_nm=det.y_nm,
                 width_nm=det.width_nm,
                 height_nm=det.height_nm,
-                color=self.model_config.ndpa_color,
+                color=self.config.model_config.ndpa_color,
                 details=details,
             )
         writer.save()
@@ -189,14 +189,14 @@ class NDPIAnnotator:
         ndpa_path = os.path.join(output_dir, f"{image_name}.ndpi.ndpa")
 
         tiles = self._build_tile_grid()
-        detections_by_tile: list[list[Detection]] = [[] for _ in tiles]
+        detections_by_tile: dict[TileSpec, list[Detection]] = {}
 
         # Write checkpoint rows as tiles are processed; final CSV is rewritten after deduplication.
         with open(csv_path, "w", newline="") as checkpoint_file:
             checkpoint_writer = csv.DictWriter(checkpoint_file, fieldnames=CSV_FIELDNAMES)
             checkpoint_writer.writeheader()
 
-            for tile_index, tile in enumerate(tqdm(tiles, desc="Annotating tiles", unit="tile")):
+            for tile in tqdm(tiles, desc="Annotating tiles", unit="tile"):
                 x, y, w, h = tile.x, tile.y, tile.w, tile.h
                 tile_3d = self.ndpi.get_tile(x=x, y=y, w=w, h=h, magnification=self.config.magnification)
                 tile_2d = self.compress(tile_3d)
@@ -234,7 +234,7 @@ class NDPIAnnotator:
                         )
                     )
 
-                detections_by_tile[tile_index] = tile_candidates
+                detections_by_tile[tile] = tile_candidates
 
                 if tile_candidates:
                     checkpoint_writer.writerows(
@@ -243,7 +243,6 @@ class NDPIAnnotator:
                     checkpoint_file.flush()
 
         final_detections = deduplicate(
-            tiles=tiles,
             detections_by_tile=detections_by_tile,
             iou_threshold=self.config.nms_iou_threshold,
         )

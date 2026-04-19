@@ -6,6 +6,8 @@ inference. It merges detections that overlap across neighboring tiles while
 keeping the highest-confidence detection in each connected duplicate cluster.
 """
 
+from typing import Mapping
+
 from src.annotator.types import Detection, TileSpec
 
 def _has_intersection(a: Detection, b: Detection) -> bool:
@@ -106,26 +108,30 @@ def _get_overlapping_tiles(
 
 
 def deduplicate(
-    tiles: list[TileSpec],
-    detections_by_tile: list[list[Detection]],
+    detections_by_tile: Mapping[TileSpec, list[Detection]],
     iou_threshold: float,
 ) -> list[Detection]:
     """
     Deduplicate detections across overlapping tile boundaries.
 
     Args:
-        tiles: Row-major list of tile specifications.
-        detections_by_tile: Parallel list of detections produced for each tile.
+        detections_by_tile: Mapping from tile specifications to detections
+            produced for those tiles. Tiles with no detections can be omitted.
         iou_threshold: IoU threshold above which detections are considered
             duplicates.
 
     Returns:
         The deduplicated detections.
     """
+    if not detections_by_tile:
+        return []
+
+    tiles = sorted(detections_by_tile.keys(), key=lambda t: (t.iy, t.ix))
     all_detections: list[Detection] = []
     ids_by_tile: list[list[int]] = []
 
-    for dets in detections_by_tile:
+    for tile in tiles:
+        dets = detections_by_tile.get(tile, [])
         ids: list[int] = []
         for det in dets:
             ids.append(len(all_detections))
