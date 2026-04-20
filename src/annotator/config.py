@@ -15,10 +15,13 @@ class ModelConfig:
     tile_size: int # Tile size in pixels for model inference, e.g. 1024 or 1008.
     ndpa_color: str # Color of output NDPA annotations for this model, e.g. "#ff0000" or "#00ff00".
 
-# Predefined static configs for supported model families.
-MODEL_CONFIGS: dict[str, ModelConfig] = {
-    "yolo": ModelConfig(key="yolo", tile_size=1024, ndpa_color="#ff0000"),
-    "rfdetr": ModelConfig(key="rfdetr", tile_size=1008, ndpa_color="#00ff00"),
+# Static config for YOLO.
+YOLO_MODEL_CONFIG = ModelConfig(key="yolo", tile_size=1024, ndpa_color="#ff0000")
+
+# Predefined static configs for supported RF-DETR variants.
+RFDETR_MODEL_CONFIGS: dict[str, ModelConfig] = {
+    "base": ModelConfig(key="rfdetr_base", tile_size=1008, ndpa_color="#00ff00"),
+    "2xlarge": ModelConfig(key="rfdetr_2xlarge", tile_size=1000, ndpa_color="#00ff00"),
 }
 
 @dataclass
@@ -38,11 +41,16 @@ class AnnotatorConfig:
     tenengrad_ksize: int = 3
     annotation_class: str = "paly"
     export_crops: bool = False
+    rfdetr_variant: str = "base"
 
     @property
     def model_config(self) -> ModelConfig:
         """Return the static model config for the selected model family."""
-        return MODEL_CONFIGS[self.model_name]
+        if self.model_name == "rfdetr":
+            return RFDETR_MODEL_CONFIGS[self.rfdetr_variant]
+        if self.model_name == "yolo":
+            return YOLO_MODEL_CONFIG
+        raise ValueError("model_name must be either 'yolo' or 'rfdetr'.")
 
     @property
     def tile_size(self) -> int:
@@ -81,3 +89,5 @@ class AnnotatorConfig:
             raise ValueError("focus_stack_kernel_size must be one of: 1, 3, 5, 7.")
         if self.tenengrad_ksize not in {1, 3, 5, 7}:
             raise ValueError("tenengrad_ksize must be one of: 1, 3, 5, 7.")
+        if self.model_name == "rfdetr" and self.rfdetr_variant not in RFDETR_MODEL_CONFIGS:
+            raise ValueError("rfdetr_variant must be either 'base' or '2xlarge'.")

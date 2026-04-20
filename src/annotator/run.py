@@ -28,6 +28,12 @@ def parse_args() -> argparse.Namespace:
         choices=["yolo", "rfdetr"],
         help="Model family to use for tile inference.",
     )
+    parser.add_argument(
+        "--rfdetr_variant",
+        choices=["base", "2xlarge"],
+        default="base",
+        help="RF-DETR variant to use when --model_name=rfdetr (default: base).",
+    )
     parser.add_argument("--checkpoint_path", required=True, help="Path to model checkpoint.")
     parser.add_argument(
         "--overlap",
@@ -102,6 +108,7 @@ def main() -> None:
         tenengrad_ksize=args.tenengrad_ksize,
         annotation_class=args.annotation_class,
         export_crops=args.export_crops,
+        rfdetr_variant=args.rfdetr_variant,
     )
 
     annotator = NDPIAnnotator(config)

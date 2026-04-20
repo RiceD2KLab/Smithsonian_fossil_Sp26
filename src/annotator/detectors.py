@@ -132,6 +132,7 @@ class RFDETRTileDetector(TileDetector):
         checkpoint_path: str,
         confidence_threshold: float,
         tile_size: int,
+        variant: str = "base",
     ) -> None:
         """
         Initialize an RF-DETR detector adapter.
@@ -140,24 +141,35 @@ class RFDETRTileDetector(TileDetector):
             checkpoint_path: Path to RF-DETR pretrained weights.
             confidence_threshold: Minimum confidence score for detections.
             tile_size: Input resolution passed to RF-DETR.
+            variant: RF-DETR variant key. Supported values: `base`, `2xlarge`.
 
         Returns:
             None.
 
         Raises:
-            ValueError: If the RF-DETR base model class is not available.
+            ValueError: If the RF-DETR variant is unsupported or unavailable.
         """
-        from src.models.rfdetr.train import _MODEL_CLASSES
+        if variant not in {"base", "2xlarge"}:
+            raise ValueError(
+                f"Unsupported RF-DETR variant '{variant}'. Supported variants are: base, 2xlarge."
+            )
+    
+        self.model = None
+        if variant == "base":
+            from rfdetr.detr import RFDETRBase
+            self.model = RFDETRBase(
+                pretrain_weights=checkpoint_path,
+                num_classes=1,
+                resolution=tile_size,
+            )
+        elif variant == "2xlarge":
+            from rfdetr_plus import RFDETR2XLarge
+            self.model = RFDETR2XLarge(
+                pretrain_weights=checkpoint_path,
+                num_classes=1,
+                resolution=tile_size,
+            )
 
-        model_cls = _MODEL_CLASSES.get("base")
-        if model_cls is None:
-            raise ValueError("RF-DETR variant is unavailable in _MODEL_CLASSES.")
-
-        self.model = model_cls(
-            pretrain_weights=checkpoint_path,
-            num_classes=1,
-            resolution=tile_size,
-        )
         self.model.optimize_for_inference()
         self.confidence_threshold = confidence_threshold
 
@@ -195,6 +207,7 @@ def build_detector(
     checkpoint_path: str,
     confidence_threshold: float,
     tile_size: int,
+    rfdetr_variant: str = "base",
 ) -> TileDetector:
     """
     Construct a detector adapter for a supported model family.
@@ -204,6 +217,7 @@ def build_detector(
         checkpoint_path: Path to model weights.
         confidence_threshold: Minimum confidence score for detections.
         tile_size: Input tile size for model inference.
+        rfdetr_variant: RF-DETR variant key used when `model_name` is `rfdetr`.
 
     Returns:
         A detector implementing the :class:`TileDetector` protocol.
@@ -223,6 +237,7 @@ def build_detector(
             checkpoint_path=checkpoint_path,
             confidence_threshold=confidence_threshold,
             tile_size=tile_size,
+            variant=rfdetr_variant,
         )
 
     raise ValueError("model_name must be either 'yolo' or 'rfdetr'.")

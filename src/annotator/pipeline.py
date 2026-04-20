@@ -69,7 +69,8 @@ class NDPIAnnotator:
             model_name=config.model_name,
             checkpoint_path=config.checkpoint_path,
             confidence_threshold=config.confidence_threshold,
-            tile_size=config.model_config.tile_size,
+            tile_size=config.tile_size,
+            rfdetr_variant=config.rfdetr_variant,
         )
 
     @staticmethod
