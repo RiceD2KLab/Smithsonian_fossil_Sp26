@@ -187,16 +187,20 @@ def run_trial(
 
     log.info("Trial %d — params: %s", trial_idx, json.dumps(params))
 
+    # Explicit optimizer so Ultralytics does not use optimizer='auto', which
+    # ignores sampled lr0/momentum. Optuna may override via params, e.g.
+    # "optimizer": ["categorical", ["AdamW", "SGD"]] in --search_space.
     overrides: dict[str, Any] = {
-        "data":      yaml_path,
-        "epochs":    args.epochs,
-        "imgsz":     args.imgsz,
-        "batch":     args.batch,
-        "workers":   args.workers,
-        "patience":  args.patience,
-        "project":   str(trials_dir),
-        "name":      trial_name,
-        "exist_ok":  True,
+        "data":       yaml_path,
+        "epochs":     args.epochs,
+        "imgsz":      args.imgsz,
+        "batch":      args.batch,
+        "workers":    args.workers,
+        "patience":   args.patience,
+        "project":    str(trials_dir),
+        "name":       trial_name,
+        "exist_ok":   True,
+        "optimizer":  "AdamW",
     }
     if args.device is not None:
         overrides["device"] = args.device

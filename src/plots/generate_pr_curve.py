@@ -6,13 +6,108 @@ Precision-Recall (PR) curve using the official COCO evaluation metrics.
 import argparse
 import json
 from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import patheffects as pe
 
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
 from src.models.rfdetr.train import _MODEL_CLASSES
+
+
+def _plot_pr_curve(
+    recalls: np.ndarray,
+    precision: np.ndarray,
+    scores: np.ndarray,
+    *,
+    ap: float,
+    ap50: float,
+    n_images_eval: int,
+    n_gt: int,
+    weights_name: str,
+    model: str,
+    resolution: int,
+    out_path: Path,
+) -> tuple[float, float, float, float]:
+    """Save a presentation-style precision–recall figure.
+
+    Returns (r_star, p_star, f1_star, score_star) — the max-F₁ operating point
+    and the corresponding confidence threshold.
+    """
+    eps = 1e-12
+    f1 = (2.0 * precision * recalls) / np.clip(precision + recalls, eps, None)
+    f1 = np.where(np.isfinite(f1), f1, 0.0)
+    j = int(np.argmax(f1))
+    r_star, p_star, f1_star = float(recalls[j]), float(precision[j]), float(f1[j])
+    raw_score = float(scores[j])
+    score_star = raw_score if raw_score >= 0 else float("nan")
+
+    style = {
+        "figure.facecolor": "white",
+        "axes.facecolor": "#f7f8fa",
+        "axes.edgecolor": "#2c3e50",
+        "axes.labelcolor": "#2c3e50",
+        "axes.titlecolor": "#1a1a1a",
+        "xtick.color": "#2c3e50",
+        "ytick.color": "#2c3e50",
+        "grid.color": "#cfd8dc",
+        "grid.linestyle": ":",
+        "grid.linewidth": 0.9,
+        "legend.framealpha": 0.95,
+        "legend.edgecolor": "#cfd8dc",
+    }
+
+    with plt.rc_context(style):
+        fig, ax = plt.subplots(figsize=(8, 8), layout="constrained")
+   
+        curve_color = "#1565c0"
+        fill_color = "#42a5f5"
+
+        ax.fill_between(recalls, precision, color=fill_color, alpha=0.18, linewidth=0)
+        (line,) = ax.plot(
+            recalls,
+            precision,
+            color=curve_color,
+            linewidth=2.8,
+        )
+        line.set_path_effects([pe.Stroke(linewidth=4.5, foreground="white"), pe.Normal()])
+
+        ax.scatter(
+            [r_star],
+            [p_star],
+            s=120,
+            zorder=5,
+            color="#c62828",
+            edgecolors="white",
+            linewidths=1.5,
+            label=f"Max F1 (conf={score_star:.3f})",
+        )
+
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.02)
+        ax.set_xlabel("Recall", fontsize=16, fontweight="semibold")
+        ax.set_ylabel("Precision", fontsize=16, fontweight="semibold")
+        ax.set_title(
+            "Precision Recall Curve (IoU = 0.50)",
+            fontsize=20,
+            fontweight="bold",
+            pad=12,
+        )
+        ax.set_xticks(np.linspace(0, 1, 11))
+        ax.set_yticks(np.linspace(0, 1, 11))
+        ax.grid(True, which="major", alpha=0.85)
+        ax.set_axisbelow(True)
+
+        leg = ax.legend(loc="lower left", fontsize=14, frameon=True)
+        leg.get_frame().set_linewidth(0.8)
+
+        fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+
+    return r_star, p_star, f1_star, score_star
+
 
 def parse_args() -> argparse.Namespace:
     """
@@ -77,18 +172,21 @@ def main() -> None:
     # Extract the category ID used for palynomorphs (defaults to the first available)
     cat_ids = coco_gt.getCatIds()
     cat_id = 0 if 0 in cat_ids else cat_ids[0]
+    n_gt = len(coco_gt.getAnnIds(catIds=[cat_id]))
 
     # 3. Run Inference & format for COCO evaluation
     print(f"Running inference on {len(img_ids)} images for PR curve...")
     results = []
-    
+    n_images_eval = 0
+
     for img_id in img_ids:
         img_info = coco_gt.loadImgs(img_id)[0]
         img_path = Path(args.image_dir) / img_info['file_name']
-        
+
         if not img_path.exists():
             continue
-            
+
+        n_images_eval += 1
         detections = model.predict(str(img_path), threshold=0.001)
         
         if detections.xyxy is None or len(detections.xyxy) == 0:
@@ -124,27 +222,52 @@ def main() -> None:
     coco_eval.evaluate()
     coco_eval.accumulate()
     coco_eval.summarize()
-    
-    # 5. Plot the PR Curve
-    precisions = coco_eval.eval['precision']
-    # Extract the curve: IoU=0.50 [0], All Recall Steps [:,], Class 0 [0], All Area [0], MaxDets=100 [2]
-    pr_curve = precisions[0, :, 0, 0, 2]
-    recalls = np.linspace(0.0, 1.0, 101)
-    
-    # Generate the visualization
-    plt.figure(figsize=(10, 7))
-    plt.plot(recalls, pr_curve, linewidth=3, color='#1f77b4')
-    plt.fill_between(recalls, pr_curve, alpha=0.2, color='#1f77b4')
 
-    plt.xlabel('Recall', fontsize=12)
-    plt.ylabel('Precision', fontsize=12)
-    plt.title('Precision-Recall Curve (IoU=0.50)', fontsize=14)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
-    
-    out_img = out_path / 'pr_curve.png'
-    plt.savefig(out_img, dpi=300, bbox_inches='tight')
+    # 5. Plot the PR curve (IoU=0.50, all areas, maxDets=100, first category slice)
+    precisions = coco_eval.eval["precision"]
+    pr_curve = precisions[0, :, 0, 0, 2]
+    scores_curve = coco_eval.eval["scores"][0, :, 0, 0, 2]
+    recalls = np.linspace(0.0, 1.0, 101)
+
+    stats = coco_eval.stats
+    ap = float(stats[0])
+    ap50 = float(stats[1])
+    weights_name = Path(args.weights).name
+
+    out_img = out_path / "pr_curve.png"
+    r_star, p_star, f1_star, score_star = _plot_pr_curve(
+        recalls,
+        pr_curve,
+        scores_curve,
+        ap=ap,
+        ap50=ap50,
+        n_images_eval=n_images_eval,
+        n_gt=n_gt,
+        weights_name=weights_name,
+        model=args.model,
+        resolution=args.resolution,
+        out_path=out_img,
+    )
+
+    metrics = {
+        "ap":               ap,
+        "ap50":             ap50,
+        "p_star":           p_star,
+        "r_star":           r_star,
+        "f1_star":          f1_star,
+        "score_threshold":  score_star,
+        "n_images_eval":    n_images_eval,
+        "n_gt":             n_gt,
+        "weights":          weights_name,
+        "model":            args.model,
+        "resolution":       args.resolution,
+    }
+    metrics_path = out_path / "metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+
     print(f"\nDone! PR curve saved to {out_img}")
+    print(f"Metrics sidecar saved to {metrics_path}")
 
 if __name__ == "__main__":
     main()
