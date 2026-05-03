@@ -92,6 +92,7 @@ rich==15.0.0
 roboflow==1.2.16
 safetensors==0.7.0
 scipy==1.17.1
+seaborn==0.13.2
 setuptools==80.10.2
 shellingham==1.5.4
 simsimd==6.5.16

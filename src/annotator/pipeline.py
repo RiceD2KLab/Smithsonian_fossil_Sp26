@@ -279,10 +279,14 @@ class NDPIAnnotator:
                     )
                     checkpoint_file.flush()
 
+        n_detections = sum(len(tile_detections) for tile_detections in detections_by_tile.values())
+        print(f"Total detections before NMS: {n_detections}")
+
         final_detections = deduplicate(
             detections_by_tile=detections_by_tile,
             iou_threshold=self.config.nms_iou_threshold,
         )
+        print(f"Total detections after NMS: {len(final_detections)}")
 
         # Replace checkpoint CSV with final deduplicated results.
         self._write_csv(final_detections, csv_path)

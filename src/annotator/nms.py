@@ -126,7 +126,10 @@ def deduplicate(
     if not detections_by_tile:
         return []
 
+    # Process tiles in row-major order so neighbor search can stop early by Y.
     tiles = sorted(detections_by_tile.keys(), key=lambda t: (t.iy, t.ix))
+
+    # Flatten all detections into one list and remember global detection ids per tile.
     all_detections: list[Detection] = []
     ids_by_tile: list[list[int]] = []
 
@@ -141,6 +144,7 @@ def deduplicate(
     if not all_detections:
         return []
 
+    # Union-find tracks connected duplicate groups across overlapping tiles.
     parent = list(range(len(all_detections)))
     rank = [0] * len(all_detections)
 
@@ -170,11 +174,13 @@ def deduplicate(
         if not ids_a:
             continue
 
+        # Compare only with later tiles that geometrically overlap this tile.
         for other_index in _get_overlapping_tiles(tile_index, tiles):
             ids_b = ids_by_tile[other_index] if other_index < len(ids_by_tile) else []
             if not ids_b:
                 continue
 
+            # Merge detection ids when boxes intersect and IoU is above threshold.
             for ida in ids_a:
                 det_a = all_detections[ida]
                 for idb in ids_b:
@@ -191,8 +197,11 @@ def deduplicate(
         if best_id is None:
             best_by_component[root] = det_id
             continue
+        
+        # Keep the highest-confidence representative per duplicate component.
         if det.score > all_detections[best_id].score:
             best_by_component[root] = det_id
 
+    # Emit one representative detection per connected duplicate group.
     final_detections = [all_detections[idx] for idx in best_by_component.values()]
     return final_detections
