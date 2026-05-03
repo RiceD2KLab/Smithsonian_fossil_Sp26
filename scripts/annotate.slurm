@@ -12,17 +12,21 @@
 #SBATCH --output=slurm-annotator-%j.out
 #SBATCH --error=slurm-annotator-%j.err
 
-NDPI_PATH="/rhf/allocations/dsci435/smithsonian_full_sp26/raw/USNMPAL_793473_D3917_L_2024-01-02_13_52_23_Alaska.ndpi"
-OUTPUT_DIR="/scratch/${USER}/annotator"
-MODEL_NAME="rfdetr"          # or "yolo"
-CHECKPOINT_PATH="/scratch/${USER}/rfdetr/outputs/rfdetr_focus_stack/checkpoint_best_ema.pth"
+NDPI_PATH="<path to NDPI file>"
+OUTPUT_DIR="<path to output directory>"
+MODEL_NAME="rfdetr" # or "yolo"
+RFDETR_VARIANT="2xlarge" # or "base" if MODEL_NAME is "rfdetr"
+CHECKPOINT_PATH="<path to model checkpoint>"
 OVERLAP=0.1
 MAGNIFICATION=40
+CONFIDENCE_THRESHOLD=0.5
+COMPRESSION_METHOD="best_focal_plane" # or "focus_stack"
+
 NPROC=$SLURM_CPUS_PER_TASK
 
 REPO_DIR="$SLURM_SUBMIT_DIR"
 SCRATCH_ROOT="${SHARED_SCRATCH}/$USER"
-VENV_DIR="${SCRATCH_ROOT}/miniconda_venv"
+VENV_DIR="/projects/dsci435/smithsonian_sp26/conda-env"
 
 module purge
 unset PYTHONHOME
@@ -54,3 +58,6 @@ python -m src.annotator \
   --checkpoint_path "$CHECKPOINT_PATH" \
   --overlap "$OVERLAP" \
   --magnification "$MAGNIFICATION" \
+  --confidence_threshold "$CONFIDENCE_THRESHOLD" \
+  --rfdetr_variant "$RFDETR_VARIANT" \
+  --compression_method "$COMPRESSION_METHOD"
