@@ -141,6 +141,55 @@ def parse_training_arguments() -> argparse.Namespace:
         required=True,
         help="Number of epochs to wait for improvement before stopping.",
     )
+    parser.add_argument(
+        "--momentum",
+        type=float,
+        default=None,
+        help="Optimizer momentum (passed to model.train(); omit to use Ultralytics default).",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=None,
+        help="Optimizer weight decay; omit to use Ultralytics default.",
+    )
+    parser.add_argument(
+        "--warmup_epochs",
+        type=float,
+        default=None,
+        help="LR warmup epochs; omit to use Ultralytics default.",
+    )
+    parser.add_argument(
+        "--box",
+        type=float,
+        default=None,
+        help="Box loss gain; omit to use Ultralytics default.",
+    )
+    parser.add_argument(
+        "--cls",
+        type=float,
+        default=None,
+        help="Classification loss gain; omit to use Ultralytics default.",
+    )
+    parser.add_argument(
+        "--dfl",
+        type=float,
+        default=None,
+        help="DFL loss gain; omit to use Ultralytics default.",
+    )
+
+    # Augmentation
+    parser.add_argument(
+        "--aug_config",
+        choices=list(AUG_CONFIG.keys()),
+        default="custom",
+        help=(
+            "Augmentation configuration (default: custom). "
+            "'custom' matches the RF-DETR Albumentations pipeline. "
+            "'default' uses Ultralytics built-in defaults. "
+            "'none' disables all augmentations."
+        ),
+    )
 
     # Augmentation
     parser.add_argument(
@@ -192,6 +241,12 @@ def build_training_overrides(
     lrf: float,
     patience: int,
     aug_config: str,
+    momentum: float | None = None,
+    weight_decay: float | None = None,
+    warmup_epochs: float | None = None,
+    box: float | None = None,
+    cls_gain: float | None = None,
+    dfl: float | None = None,
 ) -> dict[str, Any]:
     """
     Build the overrides dictionary for YOLO training.
@@ -205,11 +260,13 @@ def build_training_overrides(
         project: Project output directory.
         name: Run name.
         device: Device string, or None for auto-detection.
-        optimizer: Optimizer name.
+        optimizer: Optimizer name (must not be 'auto' if tuning lr0/momentum).
         lr0: Initial learning rate.
         lrf: Final learning rate factor.
         patience: Early-stopping patience (epochs without improvement).
         aug_config: Augmentation configuration key from AUG_CONFIG.
+        momentum, weight_decay, warmup_epochs, box, cls_gain, dfl: Optional;
+            only keys with non-None values are added (matches tune.run_trial params).
 
     Returns:
         Dictionary of training overrides for model.train().
@@ -232,6 +289,21 @@ def build_training_overrides(
         overrides["device"] = device
 
     overrides.update(AUG_CONFIG[aug_config])
+
+    optional_train: dict[str, float] = {}
+    if momentum is not None:
+        optional_train["momentum"] = momentum
+    if weight_decay is not None:
+        optional_train["weight_decay"] = weight_decay
+    if warmup_epochs is not None:
+        optional_train["warmup_epochs"] = warmup_epochs
+    if box is not None:
+        optional_train["box"] = box
+    if cls_gain is not None:
+        optional_train["cls"] = cls_gain
+    if dfl is not None:
+        optional_train["dfl"] = dfl
+    overrides.update(optional_train)
 
     return overrides
 
@@ -274,6 +346,12 @@ def main() -> None:
         lrf=args.lrf,
         patience=args.patience,
         aug_config=args.aug_config,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay,
+        warmup_epochs=args.warmup_epochs,
+        box=args.box,
+        cls_gain=args.cls,
+        dfl=args.dfl,
     )
 
     model.train(**overrides)
