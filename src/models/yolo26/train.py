@@ -191,6 +191,19 @@ def parse_training_arguments() -> argparse.Namespace:
         ),
     )
 
+    # Augmentation
+    parser.add_argument(
+        "--aug_config",
+        choices=list(AUG_CONFIG.keys()),
+        default="custom",
+        help=(
+            "Augmentation configuration (default: custom). "
+            "'custom' matches the RF-DETR Albumentations pipeline. "
+            "'default' uses Ultralytics built-in defaults. "
+            "'none' disables all augmentations."
+        ),
+    )
+
     # Device and output
     parser.add_argument(
         "--device",
