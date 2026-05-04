@@ -9,14 +9,19 @@ def bounds_to_pixels(
         info: NDPIMetadata
         ) -> Tuple[int, int, int, int]:
     """
-    Convert a bounding region in nanometer coords to a
-    bounding box in pixel coords at the target magnification.
+    Convert a bounding region in nanometer coordinates to pixel coordinates.
 
-    The conversion accounts for:
-      1. The nm-per-pixel scale at the base (40x) magnification
-      2. The scale factor from 40x down to the requested magnification
-      3. The slide-centre offset that defines where pixel (0,0) sits
-         in physical space
+    Accounts for the nm-per-pixel scale at the base (40x) magnification, the
+    scale factor down to the requested magnification, and the slide-centre
+    offset that defines where pixel (0, 0) sits in physical space.
+
+    Args:
+        bounds: Bounding region whose get_bounding_box() returns (x, y, w, h) in nm.
+        magnification: Target magnification for the output pixel coordinates.
+        info: NDPI slide metadata containing conversion constants.
+
+    Returns:
+        Tuple (x, y, width, height) in pixels at the requested magnification.
     """
     nm_per_px_40x = info.mpp_x * 1000.0
     scale = info.objective_power / magnification

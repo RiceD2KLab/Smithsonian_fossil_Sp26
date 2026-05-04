@@ -6,6 +6,15 @@ class NDPAWriter:
     """Write NDPA annotations in XML format with rectangle freehand or circle entries."""
 
     def __init__(self, output_path: str) -> None:
+        """
+        Load an existing NDPA file or create a new one at output_path.
+
+        Args:
+            output_path: Destination path for the NDPA XML file.
+
+        Returns:
+            An `NDPAWriter` instance.
+        """
         self.output_path = output_path
         self._tree, self._root = self._load_or_create(output_path)
         self._next_id = self._compute_next_id()
@@ -16,6 +25,12 @@ class NDPAWriter:
     def _load_or_create(path: str) -> tuple[ET.ElementTree, ET.Element]:
         """
         Load an existing NDPA XML file or create a new one if it doesn't exist.
+
+        Args:
+            path: Path to the NDPA XML file.
+
+        Returns:
+            A tuple containing the XML tree and root element.
         """
         # Load existing NDPA XML if available
         if os.path.exists(path):
@@ -35,6 +50,9 @@ class NDPAWriter:
     def _compute_next_id(self) -> int:
         """
         Compute the next available annotation ID by scanning existing <ndpviewstate> entries.
+
+        Returns:
+            The next available annotation ID.
         """
         max_id = 0
         for state in self._root.findall("ndpviewstate"):
@@ -129,8 +147,21 @@ class NDPAWriter:
         """
         Add one circular annotation in NDPA format.
 
-        The circle is inscribed in the input bounding box, i.e. centered at the
-        box center with radius = min(width, height) / 2.
+        The circle is inscribed in the input bounding box, centered at the box
+        center with radius = min(width, height) / 2.
+
+        Args:
+            label: Class label used as <title>.
+            lens: Magnification written to <lens>.
+            x_nm: Top-left x of the bounding box in nanometers.
+            y_nm: Top-left y of the bounding box in nanometers.
+            width_nm: Bounding box width in nanometers.
+            height_nm: Bounding box height in nanometers.
+            color: Hex color string for the annotation stroke.
+            details: Free-text note stored in <details>.
+
+        Returns:
+            The integer ID assigned to the new annotation.
         """
         x1 = int(round(x_nm))
         y1 = int(round(y_nm))
