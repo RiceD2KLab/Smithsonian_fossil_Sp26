@@ -31,10 +31,23 @@ def _plot_pr_curve(
     resolution: int,
     out_path: Path,
 ) -> tuple[float, float, float, float]:
-    """Save a presentation-style precision–recall figure.
+    """Save a presentation-style precision-recall figure.
 
-    Returns (r_star, p_star, f1_star, score_star) — the max-F₁ operating point
-    and the corresponding confidence threshold.
+    Args:
+        recalls: The recall values.
+        precision: The precision values.
+        scores: The confidence scores.
+        ap: The average precision.
+        ap50: The average precision at IoU=0.50.
+        n_images_eval: The number of images evaluated.
+        n_gt: The number of ground truth objects.
+        weights_name: The name of the weights file.
+        model: The model variant.
+        resolution: The resolution of the images.
+        out_path: The path to save the figure.
+
+    Returns:
+        The max-F₁ operating point and the corresponding confidence threshold.
     """
     eps = 1e-12
     f1 = (2.0 * precision * recalls) / np.clip(precision + recalls, eps, None)
