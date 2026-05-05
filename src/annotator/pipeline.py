@@ -8,6 +8,7 @@ cross-tile deduplication, and export to CSV, NDPA, and optional PNG crops.
 import csv
 import math
 import os
+import time
 from pathlib import Path
 from tqdm import tqdm
 from PIL import Image
@@ -247,8 +248,14 @@ class NDPIAnnotator:
         csv_path = os.path.join(output_dir, f"{image_name}.csv")
         ndpa_out = self.config.ndpa_path if self.config.ndpa_path else os.path.join(output_dir, f"{image_name}.ndpi.ndpa")
 
+        _t0 = time.perf_counter()
         tiles = self._build_tile_grid()
+        t_tiling = time.perf_counter() - _t0
+        n_tiles = len(tiles)
+
         detections_by_tile: dict[TileSpec, list[Detection]] = {}
+        t_compress = 0.0
+        t_infer = 0.0
 
         # Write checkpoint rows as tiles are processed; final CSV is rewritten after deduplication.
         with open(csv_path, "w", newline="") as checkpoint_file:
@@ -258,8 +265,14 @@ class NDPIAnnotator:
             for tile in tqdm(tiles, desc="Annotating tiles", unit="tile"):
                 x, y, w, h = tile.x, tile.y, tile.w, tile.h
                 tile_3d = self.ndpi.get_tile(x=x, y=y, w=w, h=h, magnification=self.config.magnification)
+
+                _t = time.perf_counter()
                 tile_2d = self.compress(tile_3d)
+                t_compress += time.perf_counter() - _t
+
+                _t = time.perf_counter()
                 boxes, scores = self.detector.predict(tile_2d)
+                t_infer += time.perf_counter() - _t
 
                 if len(boxes) == 0:
                     continue
@@ -304,11 +317,23 @@ class NDPIAnnotator:
         n_detections = sum(len(tile_detections) for tile_detections in detections_by_tile.values())
         print(f"Total detections before NMS: {n_detections}")
 
+        _t = time.perf_counter()
         final_detections = deduplicate(
             detections_by_tile=detections_by_tile,
             iou_threshold=self.config.nms_iou_threshold,
         )
+        t_nms = time.perf_counter() - _t
         print(f"Total detections after NMS: {len(final_detections)}")
+
+        t_total = t_tiling + t_compress + t_infer + t_nms
+        per = lambda t: f"~{t / n_tiles:.3f}s/tile" if n_tiles else ""
+        print("\n--- Pipeline Timing ---")
+        print(f"  Tiling:      {t_tiling:6.2f}s  ({n_tiles} tiles)")
+        print(f"  Compression (Focus Stack/Best Focal Plane): {t_compress:6.2f}s  {per(t_compress)}")
+        print(f"  Inference:   {t_infer:6.2f}s  {per(t_infer)}")
+        print(f"  NMS:         {t_nms:6.2f}s")
+        print(f"  Total:       {t_total:6.2f}s")
+        print("-----------------------\n")
 
         # Replace checkpoint CSV with final deduplicated results.
         self._write_csv(final_detections, csv_path)
