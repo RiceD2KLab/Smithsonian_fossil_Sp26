@@ -30,6 +30,17 @@ The pipeline also depends on shared slide/data helpers in `src/data/`.
 8. Detections from overlapping tiles are merged with boundary-aware deduplication.
 9. Final detections are written to CSV and NDPA files.
 
+## ROI-Restricted Annotation
+
+By default the pipeline tiles and annotates the full slide. Passing `--ndpa_path` restricts inference to the rectangular regions of interest (ROIs) defined in that NDPA file, and writes predictions back into the same file (appended alongside the existing ROI outlines).
+
+| Mode | Tile coverage | NDPA output |
+|---|---|---|
+| `--ndpa_path` not set | Full slide | `output_dir/<name>.ndpi.ndpa` (new file) |
+| `--ndpa_path` set | Tiles within each ROI only | Appended to the input NDPA file |
+
+The NDPA file must already contain at least one freehand (rectangle) annotation marking the region(s) to process.
+
 ## Supported Models
 
 The current CLI accepts these model families:
@@ -76,7 +87,11 @@ It does not deduplicate globally across the whole slide. Instead, it compares de
 The pipeline writes two files into `output_dir`:
 
 - `<slide_name>.csv`
-- `<slide_name>.ndpi.ndpa`
+
+The NDPA output destination depends on the mode:
+
+- **Full-slide mode** (no `--ndpa_path`): a new `<slide_name>.ndpi.ndpa` is created in `output_dir`.
+- **ROI mode** (`--ndpa_path` set): predictions are appended as circles into the input NDPA file; no separate NDPA is written to `output_dir`.
 
 CSV columns:
 
@@ -142,6 +157,7 @@ python -m src.annotator \
 - `--focus_stack_kernel_size` default `5`
 - `--tenengrad_ksize` default `3`
 - `--annotation_class` default `paly`
+- `--ndpa_path` default `None` — if set, restricts tiling to ROIs in this file and appends predictions to it
 
 ## Programmatic Use
 
@@ -158,6 +174,8 @@ config = AnnotatorConfig(
     checkpoint_path="/path/to/checkpoint.pt",
     overlap=0.1,
     magnification=20,
+    # Optional: restrict to ROIs and write back to the same NDPA file
+    # ndpa_path="/path/to/slide.ndpi.ndpa",
 )
 
 annotator = NDPIAnnotator(config)

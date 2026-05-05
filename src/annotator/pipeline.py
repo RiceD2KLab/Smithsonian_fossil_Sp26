@@ -17,9 +17,10 @@ from src.annotator.config import AnnotatorConfig
 from src.annotator.detectors import TileDetector, build_detector
 from src.annotator.nms import deduplicate
 from src.annotator.types import Detection, TileSpec
+from src.data.ndpa_reader import NDPAData
 from src.data.ndpa_writer import NDPAWriter
 from src.data.ndpi_reader import NDPIData
-from src.data.util import pixels_to_nm_bbox
+from src.data.util import bounds_to_pixels, pixels_to_nm_bbox
 
 CSV_FIELDNAMES = [
     "class",
@@ -97,21 +98,42 @@ class NDPIAnnotator:
 
     def _build_tile_grid(self) -> list[TileSpec]:
         """
-        Build the tile grid that covers the slide at the target magnification.
-        
-        Returns:
-            A list of `TileSpec` objects covering the slide in scan order.
+        Build the tile grid that covers the slide (or only the NDPA ROIs, if configured) at the target magnification.
+
+
+        Returns: A list of `TileSpec` objects covering the target area in scan order.
         """
         image_w, image_h = self.ndpi.get_image_size_at_magnification(self.config.magnification)
         tile_size = self.config.tile_size
         stride =  max(1, int(round(tile_size * (1.0 - self.config.overlap))))
 
-        xs = self._axis_positions(image_w, tile_size, stride)
-        ys = self._axis_positions(image_h, tile_size, stride)
+        if self.config.ndpa_path is None:
+            xs = self._axis_positions(image_w, tile_size, stride)
+            ys = self._axis_positions(image_h, tile_size, stride)
+            return [
+                TileSpec(x=x, y=y, w=tile_size, h=tile_size, ix=ix, iy=iy)
+                for iy, y in enumerate(ys)
+                for ix, x in enumerate(xs)
+            ]
+
+        ndpa = NDPAData(self.config.ndpa_path)
         tiles: list[TileSpec] = []
-        for iy, y in enumerate(ys):
-            for ix, x in enumerate(xs):
-                tiles.append(TileSpec(x=x, y=y, w=tile_size, h=tile_size, ix=ix, iy=iy))
+        iy_offset = 0
+        for roi in ndpa.rois:
+            roi_x, roi_y, roi_w, roi_h = bounds_to_pixels(roi.bounds, self.config.magnification, self.ndpi.metadata)
+            roi_x = max(0, roi_x)
+            roi_y = max(0, roi_y)
+            roi_w = min(roi_w, image_w - roi_x)
+            roi_h = min(roi_h, image_h - roi_y)
+            if roi_w <= 0 or roi_h <= 0:
+                continue
+            xs = self._axis_positions(roi_w, tile_size, stride)
+            ys = self._axis_positions(roi_h, tile_size, stride)
+            for iy, y in enumerate(ys):
+                for ix, x in enumerate(xs):
+                    tiles.append(TileSpec(x=roi_x + x, y=roi_y + y, w=tile_size, h=tile_size,
+                                          ix=ix, iy=iy_offset + iy))
+            iy_offset += len(ys) + 1  # keeps per-ROI tiles contiguous in sort order so pixel-based NMS scan stops correctly
         return tiles
     
     def _detection_to_csv_row(self, det: Detection) -> dict[str, float | str]:
@@ -223,7 +245,7 @@ class NDPIAnnotator:
         output_dir = os.path.abspath(self.config.output_dir)
         os.makedirs(output_dir, exist_ok=True)
         csv_path = os.path.join(output_dir, f"{image_name}.csv")
-        ndpa_path = os.path.join(output_dir, f"{image_name}.ndpi.ndpa")
+        ndpa_out = self.config.ndpa_path if self.config.ndpa_path else os.path.join(output_dir, f"{image_name}.ndpi.ndpa")
 
         tiles = self._build_tile_grid()
         detections_by_tile: dict[TileSpec, list[Detection]] = {}
@@ -290,7 +312,7 @@ class NDPIAnnotator:
 
         # Replace checkpoint CSV with final deduplicated results.
         self._write_csv(final_detections, csv_path)
-        self._write_ndpa(final_detections, ndpa_path)
+        self._write_ndpa(final_detections, ndpa_out)
         if self.config.export_crops:
             self._write_crops(final_detections, os.path.join(output_dir, "crops"))
         return final_detections

@@ -18,6 +18,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ndpi_path", required=True, help="Path to NDPI file.")
     parser.add_argument(
+        "--ndpa_path",
+        default=None,
+        help="Path to NDPA file with ROI outlines. If provided, only tiles within those ROIs are annotated and predictions are appended to this file.",
+    )
+    parser.add_argument(
         "--output_dir",
         required=True,
         help="Output directory for x.csv and x.ndpi.ndpa.",
@@ -96,6 +101,7 @@ def main() -> None:
     args = parse_args()
     config = AnnotatorConfig(
         ndpi_path=args.ndpi_path,
+        ndpa_path=args.ndpa_path,
         output_dir=args.output_dir,
         model_name=args.model_name,
         checkpoint_path=args.checkpoint_path,
