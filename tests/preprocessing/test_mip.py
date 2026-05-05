@@ -1,13 +1,30 @@
+"""
+Test script for maximum intensity projection (MIP) on preprocessed H5 tiles.
+
+Reads a sample H5 file produced by generate_tiles.py, runs MIP on a subset of
+tiles, and saves the resulting images as PNGs using matplotlib.
+"""
+
 import os
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 from src.preprocessing.postprocess_tiles import maximum_intensity_projection
 
-def test_mip_on_sample(h5_path, output_dir, max_tiles=20):
-    """
-    Test function: Run MIP on up to max_tiles from a single h5 file,
-    save the resulting images to output_dir using matplotlib.
+
+def test_mip_on_sample(h5_path: str, output_dir: str, max_tiles: int = 20) -> None:
+    """Run MIP on up to `max_tiles` tiles from an H5 file and save the projected images.
+
+    For each tile, computes the maximum intensity projection across z-planes and
+    saves the result as a PNG.
+
+    Args:
+        h5_path: Path to the H5 file produced by generate_tiles.py.
+        output_dir: Directory where output PNG images are written; created if absent.
+        max_tiles: Maximum number of tiles to process from the H5 file.
+
+    Returns:
+        None
     """
     os.makedirs(output_dir, exist_ok=True)
     with h5py.File(h5_path, 'r') as h5f:

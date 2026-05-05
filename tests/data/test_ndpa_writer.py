@@ -1,3 +1,8 @@
+"""
+Integration test for NDPAWriter: reads palynomorph annotations from a source NDPA
+file and writes them to a new NDPA file using NDPAWriter.
+"""
+
 import argparse
 from pathlib import Path
 
@@ -5,7 +10,21 @@ from src.data.ndpa_reader import NDPAData
 from src.data.ndpa_writer import NDPAWriter
 
 def copy_palynomorphs(input_ndpa: str, output_root: str = "output") -> tuple[str, int]:
-    """Copy palynomorph annotations from source NDPA to output NDPA."""
+    """Copy palynomorph annotations from a source NDPA file to a new output NDPA file.
+
+    Reads all palynomorph annotations from `input_ndpa`, converts each to a
+    bounding-box entry, and writes them to an NDPA file of the same name under
+    `output_root`.
+
+    Args:
+        input_ndpa: Path to the source NDPA annotation file.
+        output_root: Directory where the output NDPA file will be written;
+            created if it does not exist.
+
+    Returns:
+        Tuple `(output_path, count)` where `output_path` is the path to the
+        written NDPA file and `count` is the number of annotations copied.
+    """
     input_path = Path(input_ndpa)
     if not input_path.exists():
         raise FileNotFoundError(f"Input NDPA file not found: {input_path}")
@@ -31,6 +50,7 @@ def copy_palynomorphs(input_ndpa: str, output_root: str = "output") -> tuple[str
     return str(output_path), len(ndpa.palynomorphs)
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the NDPA writer test script."""
     parser = argparse.ArgumentParser(
         description="Copy palynomorph annotations from an NDPA file into a new NDPA using NDPAWriter."
     )
@@ -44,6 +64,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Entry point: parse arguments and run the palynomorph copy test."""
     args = parse_args()
     out_path, copied = copy_palynomorphs(args.input_ndpa, args.output_root)
     print(f"Copied {copied} palynomorph annotations to {out_path}")
