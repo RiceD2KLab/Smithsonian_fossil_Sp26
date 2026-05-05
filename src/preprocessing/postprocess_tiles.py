@@ -1,3 +1,12 @@
+"""
+Compute post-processing products (focus stack, rankings, MIP) for H5 tile files.
+
+Writes results directly into existing H5 tile groups. Supported outputs:
+1. focus_stacked — LoG-based per-pixel focus stacking
+2. rankings — focal-plane rankings by LoG, VoL, and Tenengrad sharpness metrics
+3. mip — maximum intensity projection
+"""
+
 import argparse
 import os
 
@@ -9,26 +18,32 @@ from tqdm import tqdm
 from src.preprocessing.focus_metrics import tenengrad, variance_of_laplacian
 from src.preprocessing.h5_utils import list_h5_paths
 
-"""
-Compute post-tile image products directly into H5 tile groups.
-
-Supported outputs:
-1. focus_stacked (LoG-based per-pixel focus stacking)
-2. focal plane rankings (LoG, VoL, Tenengrad)
-3. maximum_intensity_projection (MIP)
-"""
-
 TENENGRAD_KSIZE = 3
 LOG_KERNEL_SIZE = 5
 OUTPUT_CHOICES = ["focus_stacked", "rankings", "mip"]
 
 def laplacian_of_gaussian(gray: np.ndarray, k: int = LOG_KERNEL_SIZE) -> np.ndarray:
-    """Compute Laplacian of Gaussian for a 2D image."""
+    """Compute Laplacian of Gaussian for a 2D image.
+
+    Args:
+        gray: The grayscale image to compute the Laplacian of Gaussian for.
+        k: The kernel size for the Gaussian blur.
+
+    Returns:
+        The Laplacian of Gaussian for the image.
+    """
     blurred = cv2.GaussianBlur(gray, (k, k), 0)
     return cv2.Laplacian(blurred, cv2.CV_64F, ksize=k)
 
 def _to_gray_stack(tile_zfirst: np.ndarray) -> np.ndarray:
-    """Convert (z, h, w, c) tile data into a grayscale stack (z, h, w)."""
+    """Convert (z, h, w, c) tile data into a grayscale stack (z, h, w).
+
+    Args:
+        tile_zfirst: The tile data to convert into a grayscale stack.
+
+    Returns:
+        The grayscale stack.
+    """
     z, h, w, _ = tile_zfirst.shape
     gray_stack = np.zeros((z, h, w), dtype=np.uint8)
 
@@ -40,7 +55,14 @@ def _to_gray_stack(tile_zfirst: np.ndarray) -> np.ndarray:
 
 
 def vol_ranking(tile: np.ndarray) -> np.ndarray:
-    """Return focal-plane indices ranked best-to-worst by Variance of Laplacian."""
+    """Return focal-plane indices ranked best-to-worst by Variance of Laplacian.
+
+    Args:
+        tile: The tile data to rank.
+
+    Returns:
+        The focal-plane indices ranked best-to-worst by Variance of Laplacian.
+    """
     tile_zfirst = np.moveaxis(tile, -1, 0)  # (z, h, w, c)
     z, _, _, _ = tile_zfirst.shape
     gray_stack = _to_gray_stack(tile_zfirst)
@@ -50,7 +72,15 @@ def vol_ranking(tile: np.ndarray) -> np.ndarray:
 
 
 def tenengrad_ranking(tile: np.ndarray, tenengrad_ksize: int = TENENGRAD_KSIZE) -> np.ndarray:
-    """Return focal-plane indices ranked best-to-worst by Tenengrad."""
+    """Return focal-plane indices ranked best-to-worst by Tenengrad.
+
+    Args:
+        tile: The tile data to rank.
+        tenengrad_ksize: The kernel size for the Tenengrad gradient.
+
+    Returns:
+        The focal-plane indices ranked best-to-worst by Tenengrad.
+    """
     tile_zfirst = np.moveaxis(tile, -1, 0)  # (z, h, w, c)
     z, _, _, _ = tile_zfirst.shape
     gray_stack = _to_gray_stack(tile_zfirst)
@@ -63,6 +93,10 @@ def tenengrad_ranking(tile: np.ndarray, tenengrad_ksize: int = TENENGRAD_KSIZE) 
 
 def focus_stack(tile: np.ndarray, k: int = LOG_KERNEL_SIZE) -> tuple[np.ndarray, np.ndarray]:
     """Focus stack a tile of shape (h, w, c, z) to (h, w, c).
+
+    Args:
+        tile: The tile data to focus stack.
+        k: The kernel size for the Gaussian blur.
 
     Returns:
         stacked: Focus-stacked RGB image.
@@ -88,11 +122,24 @@ def focus_stack(tile: np.ndarray, k: int = LOG_KERNEL_SIZE) -> tuple[np.ndarray,
     return stacked, avg_logs
 
 def maximum_intensity_projection(tile: np.ndarray) -> np.ndarray:
-    """Collapse a tile of shape (h, w, c, z) to (h, w, c) via max projection."""
+    """Collapse a tile of shape (h, w, c, z) to (h, w, c) via max projection.
+
+    Args:
+        tile: The tile data to collapse.
+
+    Returns:
+        The maximum intensity projection of the tile.
+    """
     return np.max(tile, axis=tile.ndim - 1)
 
 def _replace_dataset(group: h5py.Group, name: str, data: np.ndarray) -> None:
-    """Replace an H5 dataset in-place if it already exists."""
+    """Replace an H5 dataset in-place if it already exists.
+
+    Args:
+        group: The H5 group to replace the dataset in.
+        name: The name of the dataset to replace.
+        data: The data to replace the dataset with.
+    """
     if name in group:
         del group[name]
     group.create_dataset(name, data=data, compression="gzip")
@@ -105,7 +152,19 @@ def process_h5_file(
     log_kernel_size: int = LOG_KERNEL_SIZE,
     tenengrad_ksize: int = TENENGRAD_KSIZE,
 ) -> None:
-    """Generate selected outputs for every tile group in one H5 file."""
+    """Generate selected outputs for every tile group in one H5 file.
+    
+    Args:
+        h5_path: The path to the H5 file to process.
+        write_focus_stacked: Whether to write the focus stacked image.
+        write_rankings: Whether to write the rankings.
+        write_mip: Whether to write the maximum intensity projection.
+        log_kernel_size: The kernel size for the Gaussian blur.
+        tenengrad_ksize: The kernel size for the Tenengrad gradient.
+
+    Returns:
+        None
+    """
     if not (write_focus_stacked or write_rankings or write_mip):
         raise ValueError("At least one output must be selected.")
 
@@ -143,6 +202,7 @@ def process_h5_file(
                 _replace_dataset(group, "maximum_intensity_projection", mip)
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for H5 tile postprocessing."""
     parser = argparse.ArgumentParser(
         description="Generate focus stacking, focal rankings, and/or MIP outputs for tile H5 files."
     )
@@ -178,6 +238,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Parse arguments and run postprocessing on all specified H5 files."""
     args = parse_args()
     h5_paths = list_h5_paths(args.input_path)
     if not h5_paths:

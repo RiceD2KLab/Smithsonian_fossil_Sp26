@@ -1,17 +1,30 @@
+"""
+Split a tile H5 dataset into train / val / test sets (70/15/15).
+
+Reads all .h5 files in a directory, shuffles them, and writes the
+resulting split to train_val_test.json.
+"""
+
 import os
 import json
 import random
 from src.preprocessing.h5_utils import list_h5_paths
 
-"""
-This script splits the dataset into training, validation, and test sets. 
-It reads all processed h5 files from the specified directory, extracts 
-the image names, and randomly shuffles them before splitting into 70% 
-training, 15% validation, and 15% test sets. The splits are saved as a 
-JSON file in the specified output directory.
-"""
 
 def split_data(image_dir, seed=None):
+    """Split H5 tile files into train, val, and test sets (70/15/15).
+
+    Args:
+        image_dir: Directory containing .h5 tile files.
+        seed: Optional random seed for reproducible shuffling.
+
+    Returns:
+        Dict with keys 'train', 'val', 'test', each mapping to a list of
+        image name strings (without the .h5 extension).
+
+    Raises:
+        ValueError: If no .h5 files are found in image_dir.
+    """
 
     # Read all processed h5 files and extract image names (without .h5 extension)
     h5_files = list_h5_paths(image_dir)

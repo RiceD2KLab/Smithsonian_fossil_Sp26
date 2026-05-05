@@ -1,3 +1,10 @@
+"""
+End-to-end inference test for YOLO and RF-DETR detectors on a preprocessed H5 tile.
+
+Loads a random focus-stacked tile from an H5 file, runs both detectors, saves
+annotated overlay images, and writes all detections to a CSV.
+"""
+
 import argparse
 import csv
 import random
@@ -10,7 +17,15 @@ import numpy as np
 from src.annotator.detectors import MODEL_CONFIGS, build_detector
 
 def _pick_random_tile(h5_path: str, seed: int) -> np.ndarray:
-    """Return a random tile with palynomorph annotations from the H5 file."""
+    """Return a random tile with palynomorph annotations from the H5 file.
+
+    Args:
+        h5_path: Path to the H5 file produced by generate_tiles + focus_stack.
+        seed: Integer seed passed to `random.Random` for reproducible sampling.
+
+    Returns:
+        RGB uint8 array of shape (H, W, 3) for the selected focus-stacked tile.
+    """
     rng = random.Random(seed)
 
     with h5py.File(h5_path, "r") as h5f:
@@ -39,7 +54,17 @@ def _pick_random_tile(h5_path: str, seed: int) -> np.ndarray:
 
 
 def _center_crop(tile: np.ndarray, size: int) -> tuple[np.ndarray, int, int]:
-    """Center-crop tile to square size. Returns (crop, offset_x, offset_y)."""
+    """Center-crop a tile to a square of the given size.
+
+    Args:
+        tile: Input image array of shape (H, W, C).
+        size: Side length in pixels for the square crop; must be <= min(H, W).
+
+    Returns:
+        Tuple `(crop, offset_x, offset_y)` where `crop` is the cropped array of
+        shape (size, size, C) and `offset_x`, `offset_y` are the top-left pixel
+        offsets of the crop within the original tile.
+    """
     h, w = tile.shape[:2]
     if h < size or w < size:
         raise ValueError(f"Tile is too small for requested crop {size}: got {(h, w)}")
@@ -49,7 +74,16 @@ def _center_crop(tile: np.ndarray, size: int) -> tuple[np.ndarray, int, int]:
     return tile[y0 : y0 + size, x0 : x0 + size], x0, y0
 
 def _draw_overlay(tile_rgb: np.ndarray, boxes: np.ndarray, scores: np.ndarray) -> np.ndarray:
-    """Draw boxes and scores on a copy of tile image."""
+    """Draw bounding boxes and confidence scores on a copy of the tile image.
+
+    Args:
+        tile_rgb: RGB uint8 image array of shape (H, W, 3).
+        boxes: Array of shape (N, 4) with columns [x1, y1, x2, y2] in pixels.
+        scores: Array of shape (N,) with confidence scores in [0, 1].
+
+    Returns:
+        BGR uint8 array of shape (H, W, 3) with boxes and score labels drawn.
+    """
     canvas = cv2.cvtColor(tile_rgb, cv2.COLOR_RGB2BGR)
     for box, score in zip(boxes, scores):
         x1, y1, x2, y2 = [int(round(v)) for v in box]
@@ -74,6 +108,23 @@ def run_test(
     confidence_threshold: float = 0.5,
     seed: int = 0,
 ) -> None:
+    """Run YOLO and RF-DETR detectors on a random focus-stacked tile and save results.
+
+    Picks one tile from the H5 file, center-crops it to each model's expected
+    tile size, runs inference, writes annotated overlay PNGs, and saves all
+    detections to `model_tile_detections.csv` in `output_dir`.
+
+    Args:
+        h5_path: Path to the H5 file produced by generate_tiles + focus_stack.
+        yolo_checkpoint: Path to the trained YOLO checkpoint file.
+        rfdetr_checkpoint: Path to the trained RF-DETR checkpoint file.
+        output_dir: Directory where overlay images and the CSV are written.
+        confidence_threshold: Minimum detector confidence to retain a detection.
+        seed: Integer seed for reproducible tile sampling.
+
+    Returns:
+        None
+    """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -143,6 +194,7 @@ def run_test(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the detector test script."""
     parser = argparse.ArgumentParser(
         description="Run YOLO and RF-DETR tile detectors on a random preprocessed focus-stacked H5 tile."
     )
@@ -156,6 +208,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Entry point: parse arguments and run the detector test."""
     args = parse_args()
     run_test(
         h5_path=args.h5_path,
