@@ -184,6 +184,77 @@ def generate_tiles(
         h5f.attrs["magnification"] = magnification
         h5f.attrs["rois"] = np.array(rois, dtype=np.float32) if rois else np.zeros((0, 4), dtype=np.float32)
 
+
+def build_label_maps(annotation_map_path: str) -> tuple[dict, dict]:
+    """Build specimen-to-index and category-to-index label maps from CSV."""
+    annotation_map = pd.read_csv(annotation_map_path)
+    specimen_to_category = {
+        str(row["Specimen_name"]).lower(): str(row["Category"])
+        for _, row in annotation_map.iterrows()
+    }
+    categories = sorted(set(specimen_to_category.values()))
+    category_to_index = {cat: idx for idx, cat in enumerate(categories)}
+    specimen_to_index = {
+        label: category_to_index[cat]
+        for label, cat in specimen_to_category.items()
+        if cat in category_to_index
+    }
+    return specimen_to_index, category_to_index
+
+
+def generate_tiles_for_dir(
+    input_dir: str,
+    output_dir: str,
+    annotation_map_path: str,
+    magnification: float,
+    tile_size: int,
+    overlap: float,
+) -> dict:
+    """Process NDPI/NDPA pairs in input_dir and write H5 tile files.
+
+    Returns:
+        Metadata dictionary written to output_dir/metadata.json.
+    """
+    if not (0.0 <= overlap < 1.0):
+        raise ValueError("--overlap must be in the range [0, 1).")
+    if tile_size <= 0:
+        raise ValueError("--tile_size must be > 0.")
+
+    specimen_to_index, category_to_index = build_label_maps(annotation_map_path)
+
+    os.makedirs(output_dir, exist_ok=True)
+    ndpi_files = sorted(file for file in os.listdir(input_dir) if file.endswith(".ndpi"))
+    for i, file in enumerate(ndpi_files):
+        ndpi_path = os.path.join(input_dir, file)
+        ndpa_path = ndpi_path + ".ndpa"
+        if os.path.exists(ndpa_path):
+            print(f"Processing {file.strip('.ndpi')} ({i+1}/{len(ndpi_files)})")
+            ndpi_data = NDPIData(ndpi_path)
+            ndpa_data = NDPAData(ndpa_path)
+            generate_tiles(
+                ndpi_data,
+                ndpa_data,
+                magnification=magnification,
+                tile_size=tile_size,
+                overlap=overlap,
+                output_dir=output_dir,
+                label_map=specimen_to_index,
+            )
+        else:
+            print(f"Warning: No corresponding .ndpa file found for {ndpi_path}, skipping.")
+
+    metadata = {
+        "input_dir": input_dir,
+        "magnification": magnification,
+        "tile_size": tile_size,
+        "overlap": overlap,
+        "label_map": category_to_index,
+    }
+    with open(os.path.join(output_dir, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    return metadata
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for tile generation."""
     parser = argparse.ArgumentParser(
@@ -232,60 +303,14 @@ def main():
     """Process all NDPI/NDPA pairs in input_dir and write H5 tile files."""
     args = parse_args()
 
-    input_dir = args.input_dir
-    output_dir = args.output_dir
-    annotation_map_path = args.annotation_map_path
-    magnification = args.magnification
-    tile_size = args.tile_size
-    overlap = args.overlap
-
-    if not (0.0 <= overlap < 1.0):
-        raise ValueError("--overlap must be in the range [0, 1).")
-    if tile_size <= 0:
-        raise ValueError("--tile_size must be > 0.")
-
-    # The annotation map defines how specimens in the NDPA files are mapped to broader categories.
-    annotation_map = pd.read_csv(annotation_map_path)
-    specimen_to_category = {str(row['Specimen_name']).lower(): str(row['Category']) for _, row in annotation_map.iterrows()}
-    
-    # Create a mapping from each category to an integer label for modeling
-    categories = sorted(set(specimen_to_category.values()))
-    category_to_index = {cat: idx for idx, cat in enumerate(categories)}
-
-    # Create merged mapping: label -> index
-    specimen_to_index = {label: category_to_index[cat] for label, cat in specimen_to_category.items() if cat in category_to_index}
-
-    os.makedirs(output_dir, exist_ok=True)
-    ndpi_files = sorted(file for file in os.listdir(input_dir) if file.endswith(".ndpi"))
-    for i, file in enumerate(ndpi_files):
-        ndpi_path = os.path.join(input_dir, file)
-        ndpa_path = ndpi_path + ".ndpa"
-        if os.path.exists(ndpa_path):
-            print(f"Processing {file.strip('.ndpi')} ({i+1}/{len(ndpi_files)})")
-            ndpi_data = NDPIData(ndpi_path)
-            ndpa_data = NDPAData(ndpa_path)
-            generate_tiles(
-                ndpi_data,
-                ndpa_data,
-                magnification=magnification,
-                tile_size=tile_size,
-                overlap=overlap,
-                output_dir=output_dir,
-                label_map=specimen_to_index
-            )
-        else:
-            print(f"Warning: No corresponding .ndpa file found for {ndpi_path}, skipping.")
-
-    # Write global metadata
-    metadata = {
-        "input_dir": input_dir,
-        "magnification": magnification,
-        "tile_size": tile_size,
-        "overlap": overlap,
-        "label_map": category_to_index # Save the category-to-index mapping for reference
-    }
-    with open(os.path.join(output_dir, "metadata.json"), "w") as f:
-        json.dump(metadata, f, indent=2)
+    generate_tiles_for_dir(
+        input_dir=args.input_dir,
+        output_dir=args.output_dir,
+        annotation_map_path=args.annotation_map_path,
+        magnification=args.magnification,
+        tile_size=args.tile_size,
+        overlap=args.overlap,
+    )
 
 if __name__ == "__main__":
     main()
