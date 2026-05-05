@@ -111,6 +111,8 @@ The src/exploration folder contains much of the exploratory data analysis perfor
 
 This repository currently contains implementations of YOLO26 and RF-DETR for palynomoprh detection. Standard object detection evaluation metrics including precision, recall, mAP@50, and mAP@50-95 are available. More information and training and evaluating these models can be found in the following README, found in [src/models/README.md](src/models/README.md).
 
+**Pre-trained weights:** Checkpoint files are shared for anyone who wants to run inference or fine-tune without training from scratch: [download pre-trained model weights](https://rice.box.com/s/tspzty026aheeoj4z8fr399fs8iwegzu).
+
 ## Usage
 
 `src/annotator` serves the primary usage of this repository: providing an end-to-end pipeline for palynomorph annotation. [src/annotator/README.md](src/annotator/README.md) provides detailed instructions on running this pipeline.
