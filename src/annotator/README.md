@@ -15,6 +15,7 @@ The annotator code is split across these modules:
 - `src/annotator/pipeline.py`: end-to-end orchestration
 - `src/annotator/run.py`: CLI entrypoint
 - `src/annotator/__main__.py`: `python -m src.annotator` entrypoint
+- `src/annotator/evaluate_ndpa.py`: NDPA evaluation script (precision, recall, F1, AP)
 
 The pipeline also depends on shared slide/data helpers in `src/data/`.
 
@@ -197,8 +198,38 @@ The configuration validation currently checks:
 - `focus_stack_kernel_size` is one of `1, 3, 5, 7`
 - `tenengrad_ksize` is one of `1, 3, 5, 7`
 
-## Notes
+## Evaluation
 
-- The pipeline currently uses a shared `NDPIData` reader for slide metadata and tile extraction.
-- RF-DETR is wired through the detector adapter in `src/annotator/detectors.py`.
-- The README reflects the code as it exists now, not an idealized API surface.
+`evaluate_ndpa.py` compares a predicted NDPA file against a ground-truth NDPA and reports end-to-end detection quality.
+
+Reported metrics:
+
+| Metric | Description |
+|---|---|
+| Precision | TP / (TP + FP) at the chosen threshold |
+| Recall | TP / (TP + FN) at the chosen threshold |
+| F1 | Harmonic mean of precision and recall |
+| AP | Area under the precision-recall curve (trapezoidal) |
+
+```bash
+python -m src.annotator.evaluate_ndpa \
+  --gt_ndpa /path/to/gt.ndpi.ndpa \
+  --pred_ndpa /path/to/predicted.ndpi.ndpa \
+  --iou_threshold 0.5
+```
+
+Example output:
+
+```
+Evaluation Results
+==================
+Ground truth:   142 annotations
+Predictions:    156 annotations
+IoU threshold:  0.50
+
+Precision:  0.8718
+Recall:     0.8028
+F1:         0.8359
+AP:         0.8472
+TP: 114  FP: 42  FN: 28
+```

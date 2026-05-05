@@ -78,10 +78,12 @@ class PalynomorphAnnotation:
         id: Unique identifier for the palynomorph annotation.
         label: Label category, e.g. "paly", "pol", "spo".
         bounds: Bounding region of the palynomorph annotation.
+        details: Free-text details string, e.g. "source=yolo; confidence=0.912".
     """
     id: int
     label: str # label category, e.g. "paly", "pol", "spo"
     bounds: BoundingRegion 
+    details: str = ""
 
 # Define the data stored in the NDPA file
 @dataclass
@@ -129,12 +131,13 @@ class NDPAData:
             if ann_type == "circle":
                 
                 label = vs.findtext("title", "").strip()
+                details = vs.findtext("details", "").strip()
                 cx = int(ann_elem.findtext("x", "0"))
                 cy = int(ann_elem.findtext("y", "0"))
                 radius = int(ann_elem.findtext("radius", "0"))
                 circle = Circle(cx=cx, cy=cy, radius=radius)
                 self.palynomorphs.append(PalynomorphAnnotation(
-                    id=ann_id, label=label, bounds=circle
+                    id=ann_id, label=label, bounds=circle, details=details
                 ))
                 
             elif ann_type == "freehand":
