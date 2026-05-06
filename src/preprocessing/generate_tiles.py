@@ -189,7 +189,18 @@ def generate_tiles(
 
 
 def build_label_maps(annotation_map_path: str) -> tuple[dict, dict]:
-    """Build specimen-to-index and category-to-index label maps from CSV."""
+    """
+    Build specimen-to-index and category-to-index label maps from CSV.
+    
+    Args:
+        annotation_map_path: Path to CSV file with columns "Specimen_name" and "
+            Category" mapping specimen labels to category names.
+
+    Returns:
+        Tuple of (specimen_to_index, category_to_index) where:
+        - specimen_to_index: dict mapping specimen label (lowercased) to integer class index
+        - category_to_index: dict mapping category name to integer class index
+    """
     annotation_map = pd.read_csv(annotation_map_path)
     specimen_to_category = {
         str(row["Specimen_name"]).lower(): str(row["Category"])
@@ -213,7 +224,16 @@ def generate_tiles_for_dir(
     tile_size: int,
     overlap: float,
 ) -> dict:
-    """Process NDPI/NDPA pairs in input_dir and write H5 tile files.
+    """
+    Process NDPI/NDPA pairs in input_dir and write H5 tile files.
+
+    Args:
+        input_dir: Directory containing .ndpi files and matching .ndpi.ndpa files.
+        output_dir: Directory where output .h5 files and metadata.json are written.
+        annotation_map_path: Path to annotation category CSV used to map specimen labels to class ids.
+        magnification: Magnification level used for tile extraction (e.g. 20).
+        tile_size: Tile size in pixels (e.g. 1024).
+        overlap: Tile overlap fraction in [0, 1) (e.g. 0
 
     Returns:
         Metadata dictionary written to output_dir/metadata.json.
