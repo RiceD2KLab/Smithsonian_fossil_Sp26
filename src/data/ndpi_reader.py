@@ -1,15 +1,17 @@
+"""
+Load NDPI whole-slide images and extract multi-focal-plane tiles.
+
+Provides metadata parsing (physical-to-pixel conversion constants) via
+OpenSlide and lazy tile extraction via tifffile/zarr so that only the
+JPEG strips needed for a given crop are decoded.
+"""
+
 from dataclasses import dataclass, field
+import matplotlib.pyplot as plt
 import numpy as np
 import tifffile
 import openslide
 import zarr
-
-"""
-This file provides funtionality to load and interact with an NDPI file.
-In particular, it can load an NDPI file and related metadata such as the 
-physical-to-pixel conversion constants, and extract 3-D tiles at specified 
-magnifications from the image.
-"""
 
 @dataclass
 class FocalPlaneInfo:
@@ -17,25 +19,40 @@ class FocalPlaneInfo:
     Metadata for one TIFF page representing a single focal plane at one magnification.
 
     The NDPI file stores every (magnification x z-offset) combination as a
-    separate TIFF page. 
+    separate TIFF page.
+
+    Atributes:
+        z_offset_nm: Focal depth offset in nanometres (negative = below, positive = above).
+        magnification: Magnification level, e.g. 5.0, 10.0, 20.0, 40.0.
+        page_index: Index into the TIFF page array.
+        shape: Shape of the TIFF page, (height, width, channels).
     """
-    z_offset_nm: int      # focal depth offset in nanometres (negative = below, positive = above)
-    magnification: float  # e.g. 5.0, 10.0, 20.0, 40.0
-    page_index: int       # index into the TIFF page array
-    shape: tuple          # (height, width, channels) of this page
+    z_offset_nm: int
+    magnification: float
+    page_index: int
+    shape: tuple
 
 @dataclass
 class NDPIMetadata:
     """
     NDPI file metadata, particularly physical-to-pixel conversion constants.
+
+    Attributes:
+        mpp_x: Microns per pixel at max (40x) magnification.
+        mpp_y: Microns per pixel at max (40x) magnification.
+        objective_power: Highest native magnification (typically 40).
+        x_offset_nm: Slide-centre offset (Hamamatsu metadata).
+        y_offset_nm: Slide-centre offset (Hamamatsu metadata).
+        full_width: Image width in pixels at 40x.
+        full_height: Image height in pixels at 40x.
     """
-    mpp_x: float              # microns per pixel at max (40x) magnification
+    mpp_x: float
     mpp_y: float
-    objective_power: float    # highest native magnification (typically 40)
-    x_offset_nm: int          # slide-centre offset (Hamamatsu metadata)
+    objective_power: float
+    x_offset_nm: int
     y_offset_nm: int
-    full_width: int           # image width in pixels at 40x
-    full_height: int          # image height in pixels at 40x
+    full_width: int
+    full_height: int
 
 @dataclass
 class NDPIData:
@@ -45,6 +62,11 @@ class NDPIData:
     Populated by parse_ndpi(). Holds the physical-to-pixel conversion 
     constants, the focal plane map used by get_page_index(), and the 
     NDPI file path.
+
+    Attributes:
+        ndpi_path: Path to the NDPI file.
+        metadata: Physical-to-pixel conversion constants.
+        focal_planes: List of focal planes in the NDPI file.
     """
     ndpi_path: str
     metadata: NDPIMetadata
@@ -58,6 +80,12 @@ class NDPIData:
         tifffile to iterate through raw TIFF pages and read Hamamatsu-specific tags:
         - Tag 65421 = magnification of this page
         - Tag 65424 = z-offset (focal depth) of this page
+
+        Args:
+            ndpi_path: Path to the NDPI file.
+
+        Returns:
+            An `NDPIData` instance.
         """
         self.ndpi_path = ndpi_path
 
@@ -94,7 +122,15 @@ class NDPIData:
                     ))
 
     def get_page_index(self, magnification: float, z_offset: int) -> int:
-        """Given a magnification and z-offset, return the corresponding TIFF page index."""
+        """Given a magnification and z-offset, return the corresponding TIFF page index.
+        
+        Args:
+            magnification: Magnification level, e.g. 5.0, 10.0, 20.0, 40.0.
+            z_offset: Focal depth offset in nanometres (negative = below, positive = above).
+
+        Returns:
+            The corresponding TIFF page index.
+        """
         for plane in self.focal_planes:
             if plane.magnification == magnification and plane.z_offset_nm == z_offset:
                 return plane.page_index
@@ -181,7 +217,20 @@ class NDPIData:
     def get_tile(self, x: int, y: int, w: int, h: int,
                  magnification: float = 20.) -> np.ndarray:
         """
-        Extract a 3-D tile from the NDPI file at the specified magnification and coordinates.
+        Extract a multi-focal-plane tile from the NDPI file.
+
+        Iterates over all z-offsets recorded in the file and stacks the
+        corresponding 2-D crops into a single 4-D array.
+
+        Args:
+            x: Left edge of the crop in pixels at the requested magnification.
+            y: Top edge of the crop in pixels at the requested magnification.
+            w: Width of the crop in pixels.
+            h: Height of the crop in pixels.
+            magnification: Magnification level to read from.
+
+        Returns:
+            uint8 array of shape (h, w, 3, n_focal_planes).
         """
         
         z_offsets = self.get_z_offsets()
@@ -197,7 +246,6 @@ class NDPIData:
         return tile
     
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
     
     # Example usage: parse an NDPI file and print one tile at max magnification
     ndpi_file = NDPIData("< file path >")

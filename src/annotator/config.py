@@ -6,6 +6,7 @@ runtime settings for the NDPI annotation workflow.
 
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 @dataclass
 class ModelConfig:
@@ -42,6 +43,7 @@ class AnnotatorConfig:
     annotation_class: str = "paly"
     export_crops: bool = False
     rfdetr_variant: str = "base"
+    ndpa_path: Optional[str] = None
 
     @property
     def model_config(self) -> ModelConfig:
@@ -91,3 +93,5 @@ class AnnotatorConfig:
             raise ValueError("tenengrad_ksize must be one of: 1, 3, 5, 7.")
         if self.model_name == "rfdetr" and self.rfdetr_variant not in RFDETR_MODEL_CONFIGS:
             raise ValueError("rfdetr_variant must be either 'base' or '2xlarge'.")
+        if self.ndpa_path is not None and not os.path.isfile(self.ndpa_path):
+            raise FileNotFoundError(f"NDPA file not found: {self.ndpa_path}")
