@@ -15,6 +15,7 @@ The annotator code is split across these modules:
 - `src/annotator/pipeline.py`: end-to-end orchestration
 - `src/annotator/run.py`: CLI entrypoint
 - `src/annotator/__main__.py`: `python -m src.annotator` entrypoint
+- `src/annotator/evaluate_ndpa.py`: NDPA evaluation script (precision, recall, F1, AP)
 
 The pipeline also depends on shared slide/data helpers in `src/data/`.
 
@@ -29,6 +30,17 @@ The pipeline also depends on shared slide/data helpers in `src/data/`.
 7. Global pixel boxes are converted into nanometer coordinates.
 8. Detections from overlapping tiles are merged with boundary-aware deduplication.
 9. Final detections are written to CSV and NDPA files.
+
+## ROI-Restricted Annotation
+
+By default the pipeline tiles and annotates the full slide. Passing `--ndpa_path` restricts inference to the rectangular regions of interest (ROIs) defined in that NDPA file, and writes predictions back into the same file (appended alongside the existing ROI outlines).
+
+| Mode | Tile coverage | NDPA output |
+|---|---|---|
+| `--ndpa_path` not set | Full slide | `output_dir/<name>.ndpi.ndpa` (new file) |
+| `--ndpa_path` set | Tiles within each ROI only | Appended to the input NDPA file |
+
+The NDPA file must already contain at least one freehand (rectangle) annotation marking the region(s) to process.
 
 ## Supported Models
 
@@ -76,7 +88,11 @@ It does not deduplicate globally across the whole slide. Instead, it compares de
 The pipeline writes two files into `output_dir`:
 
 - `<slide_name>.csv`
-- `<slide_name>.ndpi.ndpa`
+
+The NDPA output destination depends on the mode:
+
+- **Full-slide mode** (no `--ndpa_path`): a new `<slide_name>.ndpi.ndpa` is created in `output_dir`.
+- **ROI mode** (`--ndpa_path` set): predictions are appended as circles into the input NDPA file; no separate NDPA is written to `output_dir`.
 
 CSV columns:
 
@@ -142,6 +158,7 @@ python -m src.annotator \
 - `--focus_stack_kernel_size` default `5`
 - `--tenengrad_ksize` default `3`
 - `--annotation_class` default `paly`
+- `--ndpa_path` default `None` — if set, restricts tiling to ROIs in this file and appends predictions to it
 
 ## Programmatic Use
 
@@ -158,6 +175,8 @@ config = AnnotatorConfig(
     checkpoint_path="/path/to/checkpoint.pt",
     overlap=0.1,
     magnification=20,
+    # Optional: restrict to ROIs and write back to the same NDPA file
+    # ndpa_path="/path/to/slide.ndpi.ndpa",
 )
 
 annotator = NDPIAnnotator(config)
@@ -179,8 +198,38 @@ The configuration validation currently checks:
 - `focus_stack_kernel_size` is one of `1, 3, 5, 7`
 - `tenengrad_ksize` is one of `1, 3, 5, 7`
 
-## Notes
+## Evaluation
 
-- The pipeline currently uses a shared `NDPIData` reader for slide metadata and tile extraction.
-- RF-DETR is wired through the detector adapter in `src/annotator/detectors.py`.
-- The README reflects the code as it exists now, not an idealized API surface.
+`evaluate_ndpa.py` compares a predicted NDPA file against a ground-truth NDPA and reports end-to-end detection quality.
+
+Reported metrics:
+
+| Metric | Description |
+|---|---|
+| Precision | TP / (TP + FP) at the chosen threshold |
+| Recall | TP / (TP + FN) at the chosen threshold |
+| F1 | Harmonic mean of precision and recall |
+| AP | Area under the precision-recall curve (trapezoidal) |
+
+```bash
+python -m src.annotator.evaluate_ndpa \
+  --gt_ndpa /path/to/gt.ndpi.ndpa \
+  --pred_ndpa /path/to/predicted.ndpi.ndpa \
+  --iou_threshold 0.5
+```
+
+Example output:
+
+```
+Evaluation Results
+==================
+Ground truth:   142 annotations
+Predictions:    156 annotations
+IoU threshold:  0.50
+
+Precision:  0.8718
+Recall:     0.8028
+F1:         0.8359
+AP:         0.8472
+TP: 114  FP: 42  FN: 28
+```
