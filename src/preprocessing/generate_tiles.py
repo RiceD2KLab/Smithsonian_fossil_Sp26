@@ -1,22 +1,22 @@
+"""
+Generate H5 tile datasets from NDPI whole-slide images and NDPA annotations.
+
+Loads NDPI/NDPA file pairs, subdivides each annotated ROI into a grid of
+fixed-size tiles, and writes the results (image data + bounding boxes +
+labels) to per-slide H5 files. The main entry point iterates over all NDPI
+files in an input directory and produces one H5 file per slide.
+"""
+
 import argparse
 from src.data.ndpa_reader import NDPAData
 from src.data.ndpi_reader import NDPIData
 from src.data.util import bounds_to_pixels
 import os
-import numpy as np    
+import numpy as np
 import json
 import h5py
 from tqdm import tqdm
 import pandas as pd
-
-"""
-This file provides funtionality to load NDPI and NDPA files, 
-generate tiles from the NDPI image based on the ROIs defined in the 
-NDPA annotations, and save the tiles along with their corresponding
-annotations to disk. The main function iterates through all NDPI 
-files in a specified input directory, finds the corresponding NDPA file, 
-and processes them.
-"""
 
 def compute_tile_grid(
     start_x: int,
@@ -85,6 +85,9 @@ def generate_tiles(
         overlap: Fraction of tile overlap (e.g. 0.0 for no overlap).
         output_dir: Directory to save the generated H5 file.
         label_map: Mapping from annotation category names to integer labels.
+
+    Returns:
+        None
     """
 
     # Generate tile grid covering all ROIs

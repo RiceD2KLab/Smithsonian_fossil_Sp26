@@ -9,6 +9,7 @@
 - Data Preprocessing
 - Exploratory Data Analysis
 - Modeling & Evaluation
+- Usage
   
 ## Introduction
 
@@ -44,10 +45,12 @@ This repository contains code for the implementation of various objection detect
 
 - `scripts/` - Scripts for running experiments and launching SLURM jobs.
 - `src/` — Main source code for the project, organized by functionality:
-  - `src/data/` - Utilities for reading, parsing, and converting raw microscopy data.
-  - `src/preprocessing/` - Scripts for converting raw data into machine learning-ready formats.
+  - `src/annotator/` — An end-to-end, annotation pipeline.
+  - `src/data/` — Utilities for reading, parsing, and converting raw microscopy data.
   - `src/exploration/` — Tools for exploratory data analysis and visualization.
-  - `src/modeling/` — Code for model training of evaluated architectures, including YOLO26 and RF-DETR.
+  - `src/models/` — Code for model training of evaluated architectures, including YOLO26 and RF-DETR.
+  - `src/plots/` — Scripts for generating result plots for model testing.
+  - `src/preprocessing/` - Scripts for converting raw data into machine learning-ready formats.
 - `tests/` — Unit tests for various code.
 - `requirements.txt` — List of Python dependencies required to run the project.
 
@@ -108,3 +111,9 @@ The src/exploration folder contains much of the exploratory data analysis perfor
 ## Modeling & Evaluation
 
 This repository currently contains implementations of YOLO26 and RF-DETR for palynomoprh detection. Standard object detection evaluation metrics including precision, recall, mAP@50, and mAP@50-95 are available. More information and training and evaluating these models can be found in the following README, found in [src/models/README.md](src/models/README.md).
+
+**Pre-trained weights:** Checkpoint files are shared for anyone who wants to run inference or fine-tune without training from scratch: [download pre-trained model weights](https://rice.box.com/s/tspzty026aheeoj4z8fr399fs8iwegzu).
+
+## Usage
+
+`src/annotator` serves the primary usage of this repository: providing an end-to-end pipeline for palynomorph annotation. [src/annotator/README.md](src/annotator/README.md) provides detailed instructions on running this pipeline.

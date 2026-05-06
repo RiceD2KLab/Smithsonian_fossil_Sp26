@@ -56,6 +56,18 @@ def _is_valid_bbox(
     uncropped_w: float,
     uncropped_h: float,
 ) -> bool:
+    """Return True if a bounding box meets minimum area and visibility thresholds.
+
+    Args:
+        cropped_w: Width of the bbox after cropping to the tile boundary.
+        cropped_h: Height of the bbox after cropping to the tile boundary.
+        uncropped_w: Original full width of the annotation before cropping.
+        uncropped_h: Original full height of the annotation before cropping.
+
+    Returns:
+        True if the bbox has positive area, meets the minimum pixel area, and
+        the cropped area is at least MINIMUM_CROPPED_AREA_RATIO of the original.
+    """
     if cropped_w <= 0 or cropped_h <= 0:
         return False
     cropped_area = cropped_w * cropped_h
@@ -69,12 +81,34 @@ def _is_valid_bbox(
 
 @dataclasses.dataclass
 class ExportMode:
+    """Configuration for image extraction mode in the COCO export pipeline.
+    
+    Attributes:
+        kind: The type of image extraction mode.
+        plane_indices: The indices of the planes to extract.
+        top_k: The number of top planes to extract.
+        ranking_metric: The metric to use for ranking the planes.
+    """
+
     kind: str               # focus_stack | best_plane | plane | planes | all_planes | top_k_planes
     plane_indices: list[int]  # populated for plane/planes; empty for focus_stack/best_plane/all_planes/top_k_planes
     top_k: int = 5          # used only when kind == "top_k_planes"
     ranking_metric: str = "LoG"  # used by best_plane/top_k_planes: LoG | VoL | tenengrad
 
 def build_export_mode(args: argparse.Namespace) -> ExportMode:
+    """Construct an ExportMode from parsed CLI arguments.
+
+    Args:
+        args: Parsed argparse.Namespace with mode, plane_index, plane_indices,
+            top_k, and ranking_metric fields.
+
+    Returns:
+        An ExportMode instance configured for the requested extraction strategy.
+
+    Raises:
+        ValueError: If --plane_index is missing when mode is 'plane', or if
+            --plane_indices is missing when mode is 'planes'.
+    """
     kind = args.mode
     if kind == "plane":
         if args.plane_index is None:
@@ -104,9 +138,25 @@ def _export_tile(
     """
     Extract image(s) for one tile and write them to split_dir.
 
-    Returns a list of record dicts (one per image extracted):
-        file_name, width, height, bboxes (list of [x,y,w,h] in pixels),
-        labels (list of int category_ids), skipped (bool), skip_reason (str).
+    Args:
+        h5_path: Path to the H5 file containing the tile data.
+        group_name: Name of the tile group to extract.
+        image_stem: Stem of the image file name.
+        split_dir: Directory to write the extracted images to.
+        mode: ExportMode specifying how to extract images from the tile.
+        image_format: Format to write the images in.
+        single_cls: If True, collapse all categories to a single 'palynomorph' entry.
+        filter_bboxes: If True, filter out bboxes below area/visibility thresholds.
+
+    Returns:
+        A list of record dicts (one per image extracted) with the following keys:
+        - file_name: The name of the image file.
+        - width: The width of the image in pixels.
+        - height: The height of the image in pixels.
+        - bboxes: A list of bounding boxes in the format [x,y,w,h] in pixels.
+        - labels: A list of category IDs.
+        - skipped: A boolean indicating if the image was skipped.
+        - skip_reason: A string explaining why the image was skipped.
     """
     ext = f".{image_format}"
     jpeg_params = [cv2.IMWRITE_JPEG_QUALITY, 95] if image_format == "jpeg" else []
@@ -228,6 +278,15 @@ def _export_tile(
 # COCO JSON helpers
 
 def _build_categories(metadata_json_path: Optional[str], single_cls: bool) -> list[dict]:
+    """Build the COCO categories list from metadata or return a single-class default.
+
+    Args:
+        metadata_json_path: Optional path to metadata.json containing a label_map.
+        single_cls: If True, collapse all categories to a single 'palynomorph' entry.
+
+    Returns:
+        List of COCO category dicts with id, name, and supercategory keys.
+    """
     if single_cls:
         return [{"id": 0, "name": "palynomorph", "supercategory": "palynomorph"}]
 
@@ -246,6 +305,17 @@ def _build_categories(metadata_json_path: Optional[str], single_cls: bool) -> li
 
 
 def _assemble_coco_json(records: list[dict], categories: list[dict]) -> dict:
+    """Assemble a COCO-format dict from a list of tile export records.
+
+    Args:
+        records: List of record dicts produced by _export_tile(); skipped
+            entries (record['skipped'] == True) are filtered out here.
+        categories: COCO categories list from _build_categories().
+
+    Returns:
+        A COCO JSON dict with info, licenses, images, annotations, and
+        categories keys.
+    """
     images: list[dict] = []
     annotations: list[dict] = []
     img_id = 0
@@ -293,6 +363,22 @@ def run(
     metadata_json: Optional[str],
     filter_bboxes: bool,
 ) -> None:
+    """Sets up the full H5-to-COCO export pipeline.
+
+    Discovers tiles, partitions them by split, exports images in parallel,
+    writes per-split COCO JSON annotation files, and generates a dataset.yaml.
+
+    Args:
+        h5_root: Root directory containing source .h5 tile files.
+        output_dir: Root of the output tree (images/ and annotations/ created here).
+        mode: ExportMode specifying how to extract images from each tile.
+        splits_json: Optional path to train_val_test.json; all tiles go to 'all/' if absent.
+        workers: Number of parallel worker processes for image extraction.
+        image_format: Output image format, 'jpeg' or 'png'.
+        single_cls: If True, all annotations use category_id=0.
+        metadata_json: Optional path to metadata.json with label_map for category names.
+        filter_bboxes: If True, discard bboxes below area/visibility thresholds.
+    """
     # 1. Discover tiles and partition them by split
     all_tiles = list_tile_jobs(h5_root)
     if not all_tiles:
@@ -388,6 +474,7 @@ def run(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the COCO export pipeline."""
     parser = argparse.ArgumentParser(
         description="Export H5 palynomorph tile dataset to COCO JSON + image files."
     )
@@ -473,6 +560,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Parse arguments, build ExportMode, and call run()."""
     args = parse_args()
     mode = build_export_mode(args)
     run(
