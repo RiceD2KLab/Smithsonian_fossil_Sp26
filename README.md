@@ -1,4 +1,4 @@
-# Automated Detection of Palynomorphs from Digital Microscopy Slides
+# Automated Detection of Palynomorphs in Digital Microscopy
 
 ## Table of Contents
 
