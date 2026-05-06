@@ -31,15 +31,14 @@ import seaborn as sns
 from matplotlib.patches import Patch
 
 # Paths
-REPO_ROOT = Path(__file__).resolve().parents[2]
-OUT_DIR   = REPO_ROOT / "Final Report" / "results_figures"
-TUNE_DIR  = REPO_ROOT / "Final Hyperparameter Results"
+REPO_ROOT = "absolute/path/to/root"
+OUT_DIR   = REPO_ROOT / "output" / "dir"
+TUNE_DIR  = REPO_ROOT / "tune" / "dir"
 
 YOLO_FS_CSV   = TUNE_DIR / "YOLO - Focus Stack Result"    / "results.csv"
 YOLO_BP_CSV   = TUNE_DIR / "YOLO - Best Plane Result"     / "results.csv"
 RFDETR_FS_LOG = TUNE_DIR / "RF-DETR - Focus Stack Result" / "log.txt"
 RFDETR_BP_LOG = TUNE_DIR / "RF-DETR - Best Plane Result"  / "log.txt"
-RFDETR_FS_PR  = TUNE_DIR / "RF-DETR - Focus Stack Result" / "pr_curve.png"
 
 # Style
 sns.set_theme(style="whitegrid", font="serif")
@@ -60,7 +59,8 @@ ORANGE_DARK  = "#c0392b"
 ORANGE_LIGHT = "#e8967a"
 
 
-# 1. Model Comparison Bar Chart
+# Model Comparison Bar Chart
+# NOTE: Make sure to edit values here!
 def plot_model_comparison() -> None:
     """Two-panel grouped bar chart: AP@50 (top) and AP@50-95 (bottom), Y-axis 0-1."""
     configs = [
@@ -117,7 +117,8 @@ def plot_model_comparison() -> None:
     print("Saved map_comparison_final")
 
 
-# 2. Bayesian Tuning Trajectory
+# Bayesian Tuning Trajectory
+# NOTE: Make sure to edit values here!
 def plot_tuning_trajectory() -> None:
     """Scatter+line plot of validation AP@50 across all RF-DETR Bayesian trials."""
     first_bp  = [0.8282, 0.8277, 0.8253, 0.8273, 0.8238, 0.8289,
@@ -166,15 +167,7 @@ def plot_tuning_trajectory() -> None:
     print("Saved tuning_trajectory")
 
 
-# 3. Copy existing PR curve
-def copy_pr_curve() -> None:
-    """Copy the pre-computed RF-DETR 2XL focus-stacked PR curve PNG."""
-    dst = OUT_DIR / "pr_curve_final.png"
-    shutil.copy2(RFDETR_FS_PR, dst)
-    print(f"Copied PR curve → {dst.name}")
-
-
-# 4a. YOLO26-L Training Curves
+# YOLO26-L Training Curves
 def _load_yolo_csv(path: Path) -> dict:
     """Load a YOLO results.csv and return a dict of metric lists keyed by name.
 
@@ -249,7 +242,7 @@ def plot_yolo_tuned_training_curves() -> None:
     print(f"Saved yolo_tuned_training_curves  (best FS ep: {best_fs}, best BP ep: {best_bp})")
 
 
-# 4b. RF-DETR 2XL Training Curves
+# RF-DETR 2XL Training Curves
 def _load_rfdetr_log(path: Path) -> dict:
     """Load an RF-DETR log.txt (one JSON object per line) and return metric lists.
 
@@ -334,7 +327,6 @@ if __name__ == "__main__":
     plot_model_comparison()
     plot_tuning_trajectory()
     plot_preprocessing_sensitivity()
-    copy_pr_curve()
     plot_yolo_tuned_training_curves()
     plot_rfdetr_tuned_training_curves()
     print("\nAll figures saved to:", OUT_DIR)
