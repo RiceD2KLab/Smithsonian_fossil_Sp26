@@ -80,9 +80,10 @@ The original dataset consists of multi-focal microscopy images. Each sample is s
 
 Utilities for interacting with raw NDPI and NDPA data can be found in the src/data folder, and information on their implementation and use can be found in [src/data/README.md](src/data/README.md).
 
-In addition, two auxiliary files accompany the dataset:
+In addition, three auxiliary files accompany the dataset:
 - annotation_by_category.csv: Provides summary-level statistics of the number and type of annotations per annotated NDPI file.
 - annotation_categories.csv: Provides a mapping of annotation names, which may include full species names, to six prediction classes.
+- Samples_with_annotations_stained_non_stained.csv: Provides a binary classification of stained vs. non-stained for all 82 annotated slides.
 
 ### HDF5 Data Format
 For efficient processing and analysis, the data is converted into HDF5 (.h5) files. Each HDF5 file contains multiple tiles (subregions) from the original images, along with relevant metadata and annotations.
