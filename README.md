@@ -88,6 +88,8 @@ In addition, three auxiliary files accompany the dataset:
 - annotation_categories.csv: Provides a mapping of annotation names, which may include full species names, to six prediction classes.
 - Samples_with_annotations_stained_non_stained.csv: Provides a binary classification of stained vs. non-stained for all annotated slides.
 
+For the most effective usage, the data should be stored in a singular directory containing the three auxiliary files as well as one subdirectory containing all NDPA and NDPI files.
+
 ### HDF5 Data Format
 For efficient processing and analysis, the data is converted into HDF5 (.h5) files. Each HDF5 file contains multiple tiles (subregions) from the original images, along with relevant metadata and annotations.
 
@@ -120,4 +122,6 @@ The src/annotator folder provides an end-to-end pipeline for whole-slide annotat
 
 ## Usage
 
-[notebooks/demo.ipynb](notebooks/demo.ipynb) provides a complete end-to-end demonstration of the usage for the full pre-processing pipeline, model training and hyperparameter tuning, and whole-slide annotation. Specific usage instructions and the command-line interface for each module can additionally be found in each module's README.
+[notebooks/demo.ipynb](notebooks/demo.ipynb) provides a complete end-to-end demonstration of the usage for the full pre-processing pipeline, model training and hyperparameter tuning, and whole-slide annotation. The demo notebook can be easily configured by providing the paths to the relevant auxiliary CSV files and the directory containing the NDPI and NDPA files, as well as the relevant output paths.
+
+Specific usage instructions and the command-line interface for each module can additionally be found in each module's README.
