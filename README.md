@@ -86,7 +86,9 @@ Utilities for interacting with raw NDPI and NDPA data can be found in the src/da
 In addition, three auxiliary files accompany the dataset:
 - annotation_by_category.csv: Provides summary-level statistics of the number and type of annotations per annotated NDPI file.
 - annotation_categories.csv: Provides a mapping of annotation names, which may include full species names, to six prediction classes.
-- Samples_with_annotations_stained_non_stained.csv: Provides a binary classification of stained vs. non-stained for all 82 annotated slides.
+- Samples_with_annotations_stained_non_stained.csv: Provides a binary classification of stained vs. non-stained for all annotated slides.
+
+For the most effective usage, the data should be stored in a singular directory containing the three auxiliary files as well as one subdirectory containing all NDPA and NDPI files.
 
 ### HDF5 Data Format
 For efficient processing and analysis, the data is converted into HDF5 (.h5) files. Each HDF5 file contains multiple tiles (subregions) from the original images, along with relevant metadata and annotations.
@@ -114,6 +116,12 @@ This repository currently contains implementations of YOLO26 and RF-DETR for pal
 
 **Pre-trained weights:** Checkpoint files are shared for anyone who wants to run inference or fine-tune without training from scratch: [download pre-trained model weights](https://rice.box.com/s/tspzty026aheeoj4z8fr399fs8iwegzu).
 
+## Whole-Slide Annotation
+
+The src/annotator folder provides an end-to-end pipeline for whole-slide annotation, which can be configured to use each combination of pre-preocessing method and model for inference.  A detailed description on the usage and interface for this pipeline can be found in the following README, found in [src/exploration/README.md](src/exploration/README.md).
+
 ## Usage
 
-`src/annotator` serves the primary usage of this repository: providing an end-to-end pipeline for palynomorph annotation. [src/annotator/README.md](src/annotator/README.md) provides detailed instructions on running this pipeline.
+[notebooks/demo.ipynb](notebooks/demo.ipynb) provides a complete end-to-end demonstration of the usage for the full pre-processing pipeline, model training and hyperparameter tuning, and whole-slide annotation. The demo notebook can be easily configured by providing the paths to the relevant auxiliary CSV files and the directory containing the NDPI and NDPA files, as well as the relevant output paths.
+
+Specific usage instructions and the command-line interface for each module can additionally be found in each module's README.
