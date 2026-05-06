@@ -108,7 +108,7 @@ The preprocessing pipeline used in this analysis contains multiple stages, inclu
 
 ## Exploratory Data Analysis
 
-The src/exploration folder contains much of the exploratory data analysis performed in this project, including exploration of annotation density, the distribution of palynomorph subtypes, the sharpness of various focal planes in our multifocal data, and more. A detailed description of the available scripts and how to reproduce this analysis can be found in the following README, found in [src/exploration/README.md](src/exploration/README.md).
+[notebooks/exploration.ipynb](notebooks/exploration.ipynb) contains the exploratory data analysis performed in this project, including exploration of annotation density, the distribution of palynomorph subtypes, the sharpness of various focal planes in our multifocal data, and more. This analysis can be reproduced  by following the Jupyter notebook.
 
 ## Modeling & Evaluation
 
