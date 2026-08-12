@@ -121,6 +121,21 @@ class NDPIData:
                         shape=page.shape,
                     ))
 
+        # cached handles to avoid reopening/reparsing the NDPI on every read
+        self._tif = None
+        self._zarr_cache = {}
+
+    def _get_tif(self):
+        if self._tif is None:
+            self._tif = tifffile.TiffFile(self.ndpi_path)
+        return self._tif
+
+    def close(self):
+        if self._tif is not None:
+            self._tif.close()
+            self._tif = None
+        self._zarr_cache.clear()
+
     def get_page_index(self, magnification: float, z_offset: int) -> int:
         """Given a magnification and z-offset, return the corresponding TIFF page index.
         
@@ -189,30 +204,35 @@ class NDPIData:
             RGB uint8 array of shape (h, w, 3).
         """
         
-        with tifffile.TiffFile(self.ndpi_path) as tif:
-            page = tif.pages[page_index]
-            page_h, page_w = page.shape[0], page.shape[1]
+        tif = self._get_tif()
+        page = tif.pages[page_index]
+        page_h, page_w = page.shape[0], page.shape[1]
 
-            # Clamp crop coordinates to page bounds
-            x0 = max(0, x)
-            y0 = max(0, y)
-            x1 = min(page_w, x + w)
-            y1 = min(page_h, y + h)
+        # Clamp crop coordinates to page bounds
+        x0 = max(0, x)
+        y0 = max(0, y)
+        x1 = min(page_w, x + w)
+        y1 = min(page_h, y + h)
 
-            if x1 <= x0 or y1 <= y0:
-                return np.zeros((h, w, 3), dtype=np.uint8)
+        if x1 <= x0 or y1 <= y0:
+            return np.zeros((h, w, 3), dtype=np.uint8)
 
-            if page_h * page_w < 50_000_000:
-                # Small page — safe to load entirely
-                img = page.asarray()
-                crop = img[y0:y1, x0:x1]
-            else:
-                # Large page — lazy-read via zarr to avoid multi-GB allocation
-                store = page.aszarr()
-                z = zarr.open(store, mode="r")
-                crop = np.array(z[y0:y1, x0:x1])
+        if page_h * page_w < 50_000_000:
+            # Small page — safe to load entirely (cached array per page)
+            arr = self._zarr_cache.get(page_index)
+            if arr is None:
+                arr = page.asarray()
+                self._zarr_cache[page_index] = arr
+            crop = arr[y0:y1, x0:x1]
+        else:
+            # Large page — lazy-read via cached zarr store
+            z = self._zarr_cache.get(page_index)
+            if z is None:
+                z = zarr.open(page.aszarr(), mode="r")
+                self._zarr_cache[page_index] = z
+            crop = np.array(z[y0:y1, x0:x1])
 
-            return crop if crop.ndim == 3 else np.stack([crop] * 3, axis=-1)
+        return crop if crop.ndim == 3 else np.stack([crop] * 3, axis=-1)
 
     def get_tile(self, x: int, y: int, w: int, h: int,
                  magnification: float = 20.) -> np.ndarray:
